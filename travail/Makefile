@@ -1,6 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Werror
-PATH = "./include"
+CFLAGS = -Wall -Werror -Iinclude
 #LDFLAGS=-lpthread
 all: client server
 
@@ -19,5 +18,4 @@ serveur.o: serveur.c
 clean:
 	rm -f client server client.o serveur.o
 
-.PHONY all clean
-	
+#.PHONY all clean
