@@ -57,8 +57,6 @@ int send_all(int sock, void *buffer, size_t size)
 
 void echo_client(int sockfd) {
     char buff[MSG_LEN];
-    int n;
-
     struct pollfd fds[2];
 
     fds[0].fd = STDIN_FILENO;
@@ -66,40 +64,50 @@ void echo_client(int sockfd) {
 
     fds[1].fd = sockfd;
     fds[1].events = POLLIN;
-
+    // J'ai tout changer pour me conformer à poll().
     while (1) {
-        memset(buff, 0, MSG_LEN);
-        printf("Message: ");
-        n = 0;
         
         int ret = poll(fds, 2, -1); //Tache 1.5, '-1' = attendre indef
 
         if (ret < 0) {
-        perror("poll");
-        break;
-        }
-
-        while ((buff[n++] = getchar()) != '\n') {}
-
-        int size_msg = strlen(buff);
-
-        send_all(sockfd, &size_msg, sizeof(int));
-        send_all(sockfd, buff, size_msg);
-        printf("Message sent!\n");
-
-        memset(buff, 0, MSG_LEN);
-
-        int size_recv;
-        recv_all(sockfd, &size_recv, sizeof(int));
-
-        if (size_recv >= MSG_LEN) {
-            fprintf(stderr, "Message trop long\n");
+            perror("poll");
             break;
         }
+        // Saisi au clavier
+        if (fds[0].revents & POLLIN) {
+            memset(buff, 0, MSG_LEN);
 
-        recv_all(sockfd, buff, size_recv);
-        buff[size_recv] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
-        printf("Received: %s", buff);
+            if (fgets(buff, MSG_LEN, stdin) == NULL) {
+                break;
+            }
+
+            int size_msg = strlen(buff);
+
+            send_all(sockfd, &size_msg, sizeof(int));
+            send_all(sockfd, buff, size_msg);
+
+            /* Req1.7 */
+            if (strcmp(buff, "/quit\n") == 0) {
+                printf("Déconnexion...\n");
+                break;
+            }
+        }
+
+        if (fds[1].revents & POLLIN) {
+            memset(buff, 0, MSG_LEN);
+
+            int size_recv;
+
+            recv_all(sockfd, &size_recv, sizeof(int));
+
+            if (size_recv < 0 || size_recv >= MSG_LEN) {
+                fprintf(stderr, "Taille de message invalide\n");
+                break;
+            }
+            recv_all(sockfd, buff, size_recv);
+            buff[size_recv] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
+            printf("Received: %s", buff);
+        }
     }
 }
 
