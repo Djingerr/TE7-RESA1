@@ -18,5 +18,5 @@ serveur.o: serveur.c common.h  #en cas de modification de common il est recompil
 clean:
 	rm -f client server client.o serveur.o
 
-.PHONY all clean
+	.PHONY all clean
 	
