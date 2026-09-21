@@ -79,7 +79,7 @@ void echo_client(int sockfd) {
 	}
 }
 
-int handle_connect() {
+int handle_connect(char *server_name, char *server_port) {
 	struct addrinfo hints, *result, *rp;
 	int sfd;
 	memset(&hints, 0, sizeof(struct addrinfo));
@@ -107,11 +107,16 @@ int handle_connect() {
 	return sfd;
 }
 
-int main() {
-	int sfd;
-	sfd = handle_connect();
-	echo_client(sfd);
-	close(sfd);
-	return EXIT_SUCCESS;
+int main(int argc, char *argv[])
+{
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <server_name> <server_port>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    int sfd = handle_connect(argv[1], argv[2]);
+    echo_client(sfd);
+    close(sfd);
+    return EXIT_SUCCESS;
 }
 
