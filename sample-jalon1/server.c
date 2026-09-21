@@ -9,6 +9,51 @@
 
 #include "common.h"
 
+void die(int ret_value, const char *msg)
+{
+    if (ret_value < 0) {
+        perror(msg);
+        exit(EXIT_FAILURE);
+    }
+}
+
+int recv_all(int sock, void *buffer, size_t size)
+{
+    size_t read_bytes = 0;
+    int ret_value;
+
+    while (read_bytes != size) {
+        ret_value = read(sock, (char *)buffer + read_bytes, size - read_bytes);
+        if (ret_value == 0) {
+            printf("Disconnected\n");
+            exit(EXIT_FAILURE);
+        }
+        die(ret_value, "reading");
+        read_bytes += ret_value;
+    }
+    return ret_value;
+}
+
+int send_all(int sock, void *buffer, size_t size)
+{
+    size_t written_bytes = 0;
+    int ret_value;
+
+    while (written_bytes != size) {
+        ret_value = write(sock, (char *)buffer + written_bytes, size - written_bytes);
+
+        if (ret_value == 0) {
+            printf("Disconnected\n");
+            exit(EXIT_FAILURE);
+        }
+
+        die(ret_value, "writing");
+        written_bytes += ret_value;
+    }
+
+    return ret_value;
+}
+
 void echo_server(int sockfd) {
 	char buff[MSG_LEN];
 	while (1) {
