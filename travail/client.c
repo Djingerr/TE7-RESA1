@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include "common.h"
 
@@ -55,37 +56,60 @@ int send_all(int sock, void *buffer, size_t size)
 }
 
 void echo_client(int sockfd) {
-	char buff[MSG_LEN];
-	int n;
-	while (1) {
-		// Cleaning memory
-		memset(buff, 0, MSG_LEN);
-		// Getting message from client
-		printf("Message: ");
-		n = 0;
-		while ((buff[n++] = getchar()) != '\n') {} // trailing '\n' will be sent
-		// Sending message (ECHO)
-		if (send(sockfd, buff, strlen(buff), 0) <= 0) {
-			break;
-		}
-		printf("Message sent!\n");
-		// Cleaning memory
-		memset(buff, 0, MSG_LEN);
-		// Receiving message
-		if (recv(sockfd, buff, MSG_LEN, 0) <= 0) {
-			break;
-		}
-		printf("Received: %s", buff);
-	}
+    char buff[MSG_LEN];
+    int n;
+
+    struct pollfd fds[2];
+
+    fds[0].fd = STDIN_FILENO;
+    fds[0].events = POLLIN;
+
+    fds[1].fd = sockfd;
+    fds[1].events = POLLIN;
+
+    while (1) {
+        memset(buff, 0, MSG_LEN);
+        printf("Message: ");
+        n = 0;
+        
+        int ret = poll(fds, 2, -1); //Tache 1.5, '-1' = attendre indef
+
+        if (ret < 0) {
+        perror("poll");
+        break;
+        }
+
+        while ((buff[n++] = getchar()) != '\n') {}
+
+        int size_msg = strlen(buff);
+
+        send_all(sockfd, &size_msg, sizeof(int));
+        send_all(sockfd, buff, size_msg);
+        printf("Message sent!\n");
+
+        memset(buff, 0, MSG_LEN);
+
+        int size_recv;
+        recv_all(sockfd, &size_recv, sizeof(int));
+
+        if (size_recv >= MSG_LEN) {
+            fprintf(stderr, "Message trop long\n");
+            break;
+        }
+
+        recv_all(sockfd, buff, size_recv);
+        buff[size_recv] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
+        printf("Received: %s", buff);
+    }
 }
 
-int handle_connect() {
+int handle_connect(char *server_name, char *server_port) {
 	struct addrinfo hints, *result, *rp;
 	int sfd;
 	memset(&hints, 0, sizeof(struct addrinfo));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
-	if (getaddrinfo(SERV_ADDR, SERV_PORT, &hints, &result) != 0) {
+	if (getaddrinfo(server_name, server_port, &hints, &result) != 0) {
 		perror("getaddrinfo()");
 		exit(EXIT_FAILURE);
 	}
@@ -107,11 +131,16 @@ int handle_connect() {
 	return sfd;
 }
 
-int main() {
-	int sfd;
-	sfd = handle_connect();
-	echo_client(sfd);
-	close(sfd);
-	return EXIT_SUCCESS;
+int main(int argc, char *argv[])
+{
+    if (argc != 3) {
+        fprintf(stderr, "Usage: %s <server_name> <server_port>\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    int sfd = handle_connect(argv[1], argv[2]);
+    echo_client(sfd);
+    close(sfd);
+    return EXIT_SUCCESS;
 }
 
