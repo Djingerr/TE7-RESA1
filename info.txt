@@ -1,3 +1,7 @@
-Nom : 
-Prénom : 
-github_login : 
+Nom : Païtard
+Prénom : Maxence
+github_login : Maxenzzz
+
+Nom : Cirou-Ratâo
+Prénom : Marco
+github_login : Djingerr
