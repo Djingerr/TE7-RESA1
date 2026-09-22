@@ -89,7 +89,7 @@ void echo_client(int sockfd) {
             /* Req1.7 */
             if (strcmp(buff, "/quit\n") == 0) {
                 printf("Déconnexion...\n");
-                break;
+                continue; //évite la fermeture prématuré.
             }
         }
 
@@ -106,7 +106,7 @@ void echo_client(int sockfd) {
             }
             recv_all(sockfd, buff, size_recv);
             buff[size_recv] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
-            printf("Received: %s", buff);
+            printf("Received: %s\n", buff);
         }
     }
 }
