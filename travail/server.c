@@ -12,20 +12,18 @@
 #define FDS_SIZE 128
 
 #include "common.h"
-#include msg_struct
+//#include "msg_struct.h"
 
-struct client_info{
+struct client_info {
     int fd;
     struct sockaddr_storage addr;
     socklen_t addrlen;
     struct client_info *next;
 };
 
-struct client_info *client_list_add(struct client_info **head, int fd, struct sockaddr_storage *addr, socklen_t addrlen)
-{
+struct client_info *client_list_add(struct client_info **head, int fd, struct sockaddr_storage *addr, socklen_t addrlen) {
     struct client_info *node = malloc(sizeof(struct client_info));
-    if(node == NULL)
-    {
+    if(node == NULL) {
         perror("malloc");
         return NULL;
     }
@@ -37,14 +35,12 @@ struct client_info *client_list_add(struct client_info **head, int fd, struct so
     return node;
 }
 
-void client_list_remove(struct client_info **head, int fd)
-{
+void client_list_remove(struct client_info **head, int fd) {
     struct client_info *cur = *head;
     struct client_info *prev = NULL;
     while(cur != NULL)
     {
-        if(cur->fd == fd)
-        {
+        if(cur->fd == fd) {
             if(prev == NULL)
             *head = cur->next;
             else
@@ -57,11 +53,10 @@ void client_list_remove(struct client_info **head, int fd)
     }
 }
 
-void client_list_destroy(struct client_info **head)
-{
+void client_list_destroy(struct client_info **head) {
     struct client_info *cur = *head;
     struct client_info *tmp;
-    while(cur != NULL){
+    while(cur != NULL) {
     tmp = cur->next;
         free(cur);
         cur = tmp;
@@ -69,39 +64,36 @@ void client_list_destroy(struct client_info **head)
     *head = NULL;
 }
 
-void die(int ret_value, const char *msg)
-{
+void die(int ret_value, const char *msg) {
     if (ret_value < 0) {
         perror(msg);
         exit(EXIT_FAILURE);
     }
 }
 
-int read_on_socket(int sock, void* buffer, size_t length)
-{
-    int written_bytes = 0;
-    int to_write = length;
+int read_on_socket(int sock, void* buffer, size_t length) {
+    int read_bytes = 0;
+    int to_read = length;
     int ret_val;
-    while(written_bytes != to_write)
-    {
-        ret_val = read(sock, (char*)(buffer) + written_bytes, to_write - written_bytes);
-        if(ret_val == 0)
-        {
-            printf("disconnected\n");
-            printf("client disconnected");
+    if (to_read == 0){
+        ret_val = 0;
+    }
+    while(read_bytes != to_read) {
+        ret_val = read(sock, (char*)(buffer) + read_bytes, to_read - read_bytes);
+        if(ret_val == 0) {
+            printf("client disconnected\n");
             return ret_val;
         }
         if (ret_val < 0) {
-            perror("reading msg header");
+            perror("reading msg header\n");
             return -1;
         }
-        written_bytes += ret_val;
+        read_bytes += ret_val;
     }
     return ret_val;
 }
 
-int send_all(int sock, void *buffer, size_t size)
-{
+int send_on_socket(int sock, void *buffer, size_t size) {
     size_t written_bytes = 0;
     int ret_value;
 
@@ -129,8 +121,7 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
     fds[0].fd = sfd;
     fds[0].events = POLLIN;
     fds[0].revents = 0;
-        for (int i = 1; i < FDS_SIZE; i++)
-    {
+        for (int i = 1; i < FDS_SIZE; i++) {
         fds[i].fd = -1;
         fds[i].events = 0;
         fds[i].revents = 0;
@@ -140,10 +131,8 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
         printf("Waiting for activity\n");
         int nb_active_fd = poll(fds, FDS_SIZE, -1);
         die(nb_active_fd, "Polling");
-        for(int i = 0; i < FDS_SIZE; i++)
-        {
-            if ( i == 0 && fds[0].revents & POLLIN)
-            {
+        for(int i = 0; i < FDS_SIZE; i++) {
+            if ( i == 0 && fds[0].revents & POLLIN) {
                 //listen activity -> should accept -> redirect listen to new fd
                 
                 //Client accept
@@ -158,10 +147,8 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
 
                 client_list_add(&clients, client_fd, &client_addr, client_addrlen); //Req1.8
 
-                for(size_t j = 0; j < FDS_SIZE; j++)
-                {
-                    if(fds[j].fd == -1)
-                    {
+                for(size_t j = 0; j < FDS_SIZE; j++) {
+                    if(fds[j].fd == -1) {
                         fds[j].fd = client_fd;
                         fds[j].events = POLLIN;
                         fds[j].revents = 0;
@@ -169,8 +156,7 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     }
                 }
             }
-            else if(fds[i].revents & POLLIN)
-            {
+            else if(fds[i].revents & POLLIN) {
                 fds[i].revents = 0;
                 //read data
                 int size_msg;
@@ -198,9 +184,8 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     continue;
                 }
                 buff[size_msg] = '\0';
-                printf("message received : %s\n", buff);
-                if(strncmp(buff,"/quit",5) == 0)
-                {
+                printf("message received : %s, from fd = %d\n", buff, fds[i].fd);
+                if(strncmp(buff,"/quit",5) == 0) {
                     client_list_remove(&clients, fds[i].fd);
                     close(fds[i].fd);
                     fds[i].fd = -1;
@@ -208,8 +193,8 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                 }
                 char* resp = "message received";
                 int size_resp = strlen(resp);
-                send_all(fds[i].fd, &size_resp, sizeof(int));
-                send_all(fds[i].fd, resp, size_resp);
+                send_on_socket(fds[i].fd, &size_resp, sizeof(int));
+                send_on_socket(fds[i].fd, resp, size_resp);
             }
         }
 	}
