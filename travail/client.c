@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
-
+#include "msg_struct.h"
 #include "common.h"
 
 void die(int ret_value, const char *msg)
@@ -59,6 +59,8 @@ void echo_client(int sockfd) {
     char buff[MSG_LEN];
     struct pollfd fds[2];
 
+    struct message message = {0};
+
     fds[0].fd = STDIN_FILENO;
     fds[0].events = POLLIN;
 
@@ -80,11 +82,14 @@ void echo_client(int sockfd) {
             if (fgets(buff, MSG_LEN, stdin) == NULL) {
                 break;
             }
+            // a mettre après fgets.
+            message.pld_len = strlen(buff);
+            message.type = ECHO_SEND;
 
-            int size_msg = strlen(buff);
-
-            send_all(sockfd, &size_msg, sizeof(int));
-            send_all(sockfd, buff, size_msg);
+            send_all(sockfd, &message, sizeof(message));
+            if (message.pld_len > 0){
+                send_all(sockfd, buff, message.pld_len);
+            }
 
             /* Req1.7 */
             if (strcmp(buff, "/quit\n") == 0) {
@@ -96,16 +101,16 @@ void echo_client(int sockfd) {
         if (fds[1].revents & POLLIN) {
             memset(buff, 0, MSG_LEN);
 
-            int size_recv;
+            recv_all(sockfd, &message, sizeof(message));
 
-            recv_all(sockfd, &size_recv, sizeof(int));
-
-            if (size_recv < 0 || size_recv >= MSG_LEN) {
+            if (message.pld_len < 0 || message.pld_len >= MSG_LEN) {
                 fprintf(stderr, "Taille de message invalide\n");
                 break;
             }
-            recv_all(sockfd, buff, size_recv);
-            buff[size_recv] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
+            if (message.pld_len > 0){
+                recv_all(sockfd, buff, message.pld_len);
+            }
+            buff[message.pld_len] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
             printf("Received: %s\n", buff);
         }
     }

@@ -12,6 +12,7 @@
 #define FDS_SIZE 128
 
 #include "common.h"
+#include msg_struct
 
 struct client_info{
     int fd;
