@@ -82,19 +82,41 @@ void echo_client(int sockfd) {
             if (fgets(buff, MSG_LEN, stdin) == NULL) {
                 break;
             }
-            // a mettre après fgets.
-            message.pld_len = strlen(buff);
-            message.type = ECHO_SEND;
-
-            send_all(sockfd, &message, sizeof(message));
-            if (message.pld_len > 0){
-                send_all(sockfd, buff, message.pld_len);
-            }
 
             /* Req1.7 */
             if (strcmp(buff, "/quit\n") == 0) {
-                printf("Déconnexion...\n");
-                continue; //évite la fermeture prématuré.
+                printf("Deconnecting...\n");
+                break;
+            }
+
+            if (strncmp(buff, "/nick ", 6) == 0){
+                char *nickname = buff + 6; //enleve le "/nick"
+                char *newline = strchr(nickname, '\n');
+                if (newline != NULL) {
+                    *newline = '\0';
+                }
+
+                if (strlen(nickname) >= NICK_LEN){
+                    fprintf(stderr, "Max size for your pseudo is %d\n", NICK_LEN-1);
+                    continue;
+                }
+        
+                message.type = NICKNAME_NEW;
+                message.pld_len = 0;
+                strcpy(message.infos, nickname);
+
+                send_all(sockfd, &message, sizeof(message));
+
+                printf("Welcome aboard captain %s\n", nickname);
+            }
+            else {
+                message.type = ECHO_SEND;
+                message.pld_len = strlen(buff);
+
+                send_all(sockfd, &message, sizeof(message));
+                if (message.pld_len > 0) {
+                    send_all(sockfd, buff, message.pld_len);
+                }
             }
         }
 
@@ -140,6 +162,9 @@ int handle_connect(char *server_name, char *server_port) {
 		fprintf(stderr, "Could not connect\n");
 		exit(EXIT_FAILURE);
 	}
+    else {
+        printf("Register your username with /nick <pseudo> please");
+    }
 	freeaddrinfo(result);
 	return sfd;
 }
