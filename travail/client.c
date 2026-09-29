@@ -9,6 +9,7 @@
 #include <poll.h>
 #include "msg_struct.h"
 #include "common.h"
+#include <ctype.h>
 
 void die(int ret_value, const char *msg)
 {
@@ -98,6 +99,20 @@ void echo_client(int sockfd) {
 
                 if (strlen(nickname) >= NICK_LEN){
                     fprintf(stderr, "Max size for your pseudo is %d\n", NICK_LEN-1);
+                    continue;
+                }
+
+                int valid = 1;
+
+                for (size_t i = 0; i < strlen(nickname); i++) {
+                    if (!isalnum((unsigned char)nickname[i])) {
+                        valid = 0;
+                        break;
+                    }
+                }
+
+                if (!valid) {
+                    fprintf(stderr, "Pseudo invalide : lettres et chiffres uniquement\n");
                     continue;
                 }
         
