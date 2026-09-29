@@ -41,7 +41,25 @@ struct client_info *client_list_add(struct client_info **head, int fd, struct so
     return node;
 }
 
+struct client_info* client_list_find_by_fd(struct client_info *head, int fd){
+    while (head != NULL) {
+        if (head->fd == fd) {
+            return head;
+        }
+        head = head->next;
+    }
+    return NULL;
+}
 
+struct client_info* client_list_find_by_nickname(struct client_info *head, const char *nickname) {
+    while (head != NULL) {
+        if(strcmp(head->nickname, nickname) == 0) {
+            return head;
+        }
+        head = head->next;
+    }
+    return NULL;
+}
 
 void client_list_remove(struct client_info **head, int fd) {
     struct client_info *cur = *head;
@@ -196,19 +214,163 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     buff[msg.pld_len] = '\0';
                 }
                 printf("type = %s, nick_sender = %s, payload = %s, from fd = %d\n", msg_type_str[msg.type], msg.nick_sender, buff, fds[i].fd);
-                if(strncmp(buff,"/quit",5) == 0) {
-                    client_list_remove(&clients, fds[i].fd);
-                    close(fds[i].fd);
-                    fds[i].fd = -1;
+
+                struct client_info *sender = client_list_find_by_fd(clients, fds[i].fd);
+                if (sender != NULL && sender->nickname[0] == '\0' && msg.type != NICKNAME_NEW) {
+                    struct message reply;
+                    memset(&reply, 0, sizeof(reply));
+                    reply.type = msg.type;
+                    char reply_text[] = "Veuillez d'abord choisir un pseudo avec /nick <pseudo>\n";
+                    reply.pld_len = strlen(reply_text);
+                    send_on_socket(fds[i].fd, &reply, sizeof(reply));
+                    send_on_socket(fds[i].fd, reply_text, reply.pld_len);
                     continue;
                 }
-                char* resp = "message received";
-                struct message resp_msg;
-                memset(&resp_msg, 0, sizeof(resp_msg));
-                resp_msg.pld_len = strlen(resp);
-                resp_msg.type = ECHO_SEND;
-                send_on_socket(fds[i].fd, &resp_msg, sizeof(resp_msg));
-                send_on_socket(fds[i].fd, resp, resp_msg.pld_len);
+
+                switch (msg.type) {
+                    case NICKNAME_NEW: {
+                        size_t len = strlen(msg.infos);
+                        int valid = (len > 0 && len < NICK_LEN);
+                        for (size_t k = 0; valid && k < len; k++) {
+                            if (!isalnum((unsigned char)msg.infos[k])) {
+                                valid = 0;
+                            }
+                        }
+
+                        struct message reply;
+                        memset(&reply, 0, sizeof(reply));
+                        reply.type = NICKNAME_NEW;
+                        char reply_text[MSG_LEN];
+
+                        if (!valid) {
+                            snprintf(reply_text, sizeof(reply_text), "Pseudo invalide\n");
+                        } else if (client_list_find_by_nickname(clients, msg.infos) != NULL) {
+                            snprintf(reply_text, sizeof(reply_text), "Pseudo deja utilise\n");
+                        } else {
+                            strncpy(sender->nickname, msg.infos, NICK_LEN - 1);
+                            sender->nickname[NICK_LEN - 1] = '\0';
+                            snprintf(reply_text, sizeof(reply_text), "Welcome on the chat %s\n", sender->nickname);
+                        }
+
+                        reply.pld_len = strlen(reply_text);
+                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
+                        send_on_socket(fds[i].fd, reply_text, reply.pld_len);
+                        break;
+                    }
+                    case NICKNAME_LIST: {
+                        char list_text[MSG_LEN];
+                        int offset = snprintf(list_text, sizeof(list_text), "Online users are\n");
+                        for (struct client_info *c = clients; c != NULL; c = c->next) {
+                            if (c->nickname[0] != '\0' && offset < (int)sizeof(list_text)) {
+                                offset += snprintf(list_text + offset, sizeof(list_text) - offset, "  - %s\n", c->nickname);
+                            }
+                        }
+
+                        struct message reply;
+                        memset(&reply, 0, sizeof(reply));
+                        reply.type = NICKNAME_LIST;
+                        reply.pld_len = strlen(list_text);
+                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
+                        send_on_socket(fds[i].fd, list_text, reply.pld_len);
+                        break;
+                    }
+                    case NICKNAME_INFOS: {
+                        struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+
+                        struct message reply;
+                        memset(&reply, 0, sizeof(reply));
+                        reply.type = NICKNAME_INFOS;
+                        char reply_text[NI_MAXHOST + NI_MAXSERV + NICK_LEN + 150];
+
+                        if (target == NULL) {
+                            snprintf(reply_text, sizeof(reply_text), "Utilisateur %s introuvable\n", msg.infos);
+                        } else {
+                            char host[NI_MAXHOST], port[NI_MAXSERV];
+                            getnameinfo((struct sockaddr*)&target->addr, target->addrlen, host, sizeof(host), port, sizeof(port), NI_NUMERICHOST | NI_NUMERICSERV);
+
+                            char date_str[64];
+                            struct tm tm_info;
+                            localtime_r(&target->connected_at, &tm_info);
+                            strftime(date_str, sizeof(date_str), "%Y/%m/%d@%H:%M", &tm_info);
+
+                            snprintf(reply_text, sizeof(reply_text),
+                                     "%s connected since %s with IP address %s and port number %s\n",
+                                     target->nickname, date_str, host, port);
+                        }
+
+                        size_t text_len = strlen(reply_text);
+                        if (text_len >= MSG_LEN) {
+                            text_len = MSG_LEN - 1;
+                            reply_text[text_len] = '\0';
+                        }
+                        reply.pld_len = text_len;
+                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
+                        send_on_socket(fds[i].fd, reply_text, reply.pld_len);
+                        break;
+                    }
+                    case ECHO_SEND: {
+                        struct message reply;
+                        memset(&reply, 0, sizeof(reply));
+                        reply.type = ECHO_SEND;
+                        reply.pld_len = msg.pld_len;
+                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
+                        if (reply.pld_len > 0) {
+                            send_on_socket(fds[i].fd, buff, reply.pld_len);
+                        }
+                        break;
+                    }
+                    case BROADCAST_SEND: {
+                        struct message reply;
+                        memset(&reply, 0, sizeof(reply));
+                        reply.type = BROADCAST_SEND;
+                        reply.pld_len = msg.pld_len;
+                        strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
+
+                        for (struct client_info *c = clients; c != NULL; c = c->next) {
+                            if (c->fd != fds[i].fd) {
+                                send_on_socket(c->fd, &reply, sizeof(reply));
+                                if (reply.pld_len > 0) {
+                                    send_on_socket(c->fd, buff, reply.pld_len);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case UNICAST_SEND: {
+                        struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+
+                        struct message reply;
+                        memset(&reply, 0, sizeof(reply));
+
+                        if (target == NULL) {
+                            char err_text[MSG_LEN];
+                            snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
+                            reply.type = UNICAST_SEND;
+                            reply.pld_len = strlen(err_text);
+                            send_on_socket(fds[i].fd, &reply, sizeof(reply));
+                            send_on_socket(fds[i].fd, err_text, reply.pld_len);
+                        } else {
+                            reply.type = UNICAST_SEND;
+                            reply.pld_len = msg.pld_len;
+                            strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
+                            send_on_socket(target->fd, &reply, sizeof(reply));
+                            if (reply.pld_len > 0) {
+                                send_on_socket(target->fd, buff, reply.pld_len);
+                            }
+                        }
+                        break;
+                    }
+                    default: {
+                        char* resp = "message received";
+                        struct message resp_msg;
+                        memset(&resp_msg, 0, sizeof(resp_msg));
+                        resp_msg.pld_len = strlen(resp);
+                        resp_msg.type = ECHO_SEND;
+                        send_on_socket(fds[i].fd, &resp_msg, sizeof(resp_msg));
+                        send_on_socket(fds[i].fd, resp, resp_msg.pld_len);
+                        break;
+                    }
+                }
             }
         }
 	}

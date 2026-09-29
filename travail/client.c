@@ -178,7 +178,7 @@ int handle_connect(char *server_name, char *server_port) {
 		exit(EXIT_FAILURE);
 	}
     else {
-        printf("Register your username with /nick <pseudo> please");
+        printf("Register your username with /nick <pseudo> please\n");
     }
 	freeaddrinfo(result);
 	return sfd;
