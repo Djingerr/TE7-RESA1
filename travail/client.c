@@ -59,6 +59,8 @@ int send_all(int sock, void *buffer, size_t size)
 void echo_client(int sockfd) {
     char buff[MSG_LEN];
     struct pollfd fds[2];
+    char current_nickname[NICK_LEN] = "";
+    char pending_nickname[NICK_LEN] = "";
 
     struct message message = {0};
 
@@ -118,11 +120,15 @@ void echo_client(int sockfd) {
         
                 message.type = NICKNAME_NEW;
                 message.pld_len = 0;
+
+                if (current_nickname[0] != '\0'){
+                    strcpy(message.nick_sender, current_nickname);
+                }
+
                 strcpy(message.infos, nickname);
+                strcpy(pending_nickname, nickname);
 
                 send_all(sockfd, &message, sizeof(message));
-
-                printf("Welcome aboard captain %s\n", nickname);
             }
             else {
                 message.type = ECHO_SEND;
@@ -137,6 +143,7 @@ void echo_client(int sockfd) {
 
         if (fds[1].revents & POLLIN) {
             memset(buff, 0, MSG_LEN);
+            memset(&message, 0, sizeof(message));
 
             recv_all(sockfd, &message, sizeof(message));
 
@@ -144,11 +151,22 @@ void echo_client(int sockfd) {
                 fprintf(stderr, "Taille de message invalide\n");
                 break;
             }
-            if (message.pld_len > 0){
+
+            if (message.pld_len > 0) {
                 recv_all(sockfd, buff, message.pld_len);
+                buff[message.pld_len] = '\0';
             }
-            buff[message.pld_len] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
-            printf("Received (type=%s): %s\n",msg_type_str[message.type], buff);
+
+            if (message.type == NICKNAME_NEW && pending_nickname[0] != '\0') {
+                strcpy(current_nickname, pending_nickname);
+                pending_nickname[0] = '\0';
+
+                printf("Welcome aboard captain %s\n", current_nickname);
+            }
+
+            if (message.pld_len > 0) {
+                printf("Received (type=%s): %s\n", msg_type_str[message.type], buff);
+            }
         }
     }
 }
