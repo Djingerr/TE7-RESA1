@@ -148,7 +148,7 @@ void echo_client(int sockfd) {
                 recv_all(sockfd, buff, message.pld_len);
             }
             buff[message.pld_len] = '\0'; // Sinon pas de fins pour la chaine de caractère. Faire avant d'afficher.
-            printf("Received: %s\n", buff);
+            printf("Received (type=%s): %s\n",msg_type_str[message.type], buff);
         }
     }
 }

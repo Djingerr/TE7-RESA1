@@ -8,16 +8,20 @@
 #include <unistd.h>
 #include <poll.h>
 #include <signal.h>
+#include <time.h>
+#include <ctype.h>
 
 #define FDS_SIZE 128
 
 #include "common.h"
-//#include "msg_struct.h"
+#include "msg_struct.h"
 
 struct client_info {
     int fd;
     struct sockaddr_storage addr;
     socklen_t addrlen;
+    char nickname[NICK_LEN];
+    time_t connected_at;
     struct client_info *next;
 };
 
@@ -30,10 +34,14 @@ struct client_info *client_list_add(struct client_info **head, int fd, struct so
     node->fd = fd;
     node->addr = *addr;
     node->addrlen = addrlen;
+    node->nickname[0] = '\0';
+    node->connected_at = time(NULL);
     node->next = *head;
     *head = node;
     return node;
 }
+
+
 
 void client_list_remove(struct client_info **head, int fd) {
     struct client_info *cur = *head;
@@ -159,8 +167,9 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
             else if(fds[i].revents & POLLIN) {
                 fds[i].revents = 0;
                 //read data
-                int size_msg;
-                int ret = read_on_socket(fds[i].fd, &size_msg, sizeof(size_msg));
+                struct message msg;
+                memset(&msg, 0, sizeof(msg));
+                int ret = read_on_socket(fds[i].fd, &msg, sizeof(msg));
                 if (ret <= 0) {
                     client_list_remove(&clients, fds[i].fd);
                     close(fds[i].fd);
@@ -168,7 +177,7 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     continue;
                 }
 
-                if (size_msg >= MSG_LEN) {
+                if (msg.pld_len >= MSG_LEN) {
                     fprintf(stderr, "Message trop long\n");
                     client_list_remove(&clients, fds[i].fd);
                     close(fds[i].fd);
@@ -177,14 +186,16 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                 }
 
                 char buff[MSG_LEN] = {0};
-                if (read_on_socket(fds[i].fd, buff, size_msg) <= 0) {
-                    client_list_remove(&clients, fds[i].fd);
-                    close(fds[i].fd);
-                    fds[i].fd = -1;
-                    continue;
+                if (msg.pld_len > 0) {
+                    if (read_on_socket(fds[i].fd, buff, msg.pld_len) <= 0) {
+                        client_list_remove(&clients, fds[i].fd);
+                        close(fds[i].fd);
+                        fds[i].fd = -1;
+                        continue;
+                    }
+                    buff[msg.pld_len] = '\0';
                 }
-                buff[size_msg] = '\0';
-                printf("message received : %s, from fd = %d\n", buff, fds[i].fd);
+                printf("type = %s, nick_sender = %s, payload = %s, from fd = %d\n", msg_type_str[msg.type], msg.nick_sender, buff, fds[i].fd);
                 if(strncmp(buff,"/quit",5) == 0) {
                     client_list_remove(&clients, fds[i].fd);
                     close(fds[i].fd);
@@ -192,9 +203,12 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     continue;
                 }
                 char* resp = "message received";
-                int size_resp = strlen(resp);
-                send_on_socket(fds[i].fd, &size_resp, sizeof(int));
-                send_on_socket(fds[i].fd, resp, size_resp);
+                struct message resp_msg;
+                memset(&resp_msg, 0, sizeof(resp_msg));
+                resp_msg.pld_len = strlen(resp);
+                resp_msg.type = ECHO_SEND;
+                send_on_socket(fds[i].fd, &resp_msg, sizeof(resp_msg));
+                send_on_socket(fds[i].fd, resp, resp_msg.pld_len);
             }
         }
 	}
