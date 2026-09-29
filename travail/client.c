@@ -81,65 +81,170 @@ void echo_client(int sockfd) {
         // Saisi au clavier
         if (fds[0].revents & POLLIN) {
             memset(buff, 0, MSG_LEN);
+            memset(&message, 0, sizeof(message));
 
-            if (fgets(buff, MSG_LEN, stdin) == NULL) {
-                break;
+        if (fgets(buff, MSG_LEN, stdin) == NULL) {
+            break;
+        }
+
+        /* On remet le pseudo actuel dans le message */
+        if (current_nickname[0] != '\0') {
+            strcpy(message.nick_sender, current_nickname);
+        }
+
+        /* Req1.7 */
+        if (strcmp(buff, "/quit\n") == 0) {
+            printf("Deconnecting...\n");
+            break;
+        }
+
+        /* Req2.1 / Req2.4 */
+        if (strncmp(buff, "/nick ", 6) == 0) {
+            char *nickname = buff + 6; // enleve le "/nick "
+            char *newline = strchr(nickname, '\n');
+
+            if (newline != NULL) {
+                *newline = '\0';
             }
 
-            /* Req1.7 */
-            if (strcmp(buff, "/quit\n") == 0) {
-                printf("Deconnecting...\n");
-                break;
+            if (strlen(nickname) == 0) {
+                fprintf(stderr, "Pseudo vide interdit\n");
+                continue;
             }
 
-            if (strncmp(buff, "/nick ", 6) == 0){
-                char *nickname = buff + 6; //enleve le "/nick"
-                char *newline = strchr(nickname, '\n');
-                if (newline != NULL) {
-                    *newline = '\0';
-                }
-
-                if (strlen(nickname) >= NICK_LEN){
-                    fprintf(stderr, "Max size for your pseudo is %d\n", NICK_LEN-1);
-                    continue;
-                }
-
-                int valid = 1;
-
-                for (size_t i = 0; i < strlen(nickname); i++) {
-                    if (!isalnum((unsigned char)nickname[i])) {
-                        valid = 0;
-                        break;
-                    }
-                }
-
-                if (!valid) {
-                    fprintf(stderr, "Pseudo invalide : lettres et chiffres uniquement\n");
-                    continue;
-                }
-        
-                message.type = NICKNAME_NEW;
-                message.pld_len = 0;
-
-                if (current_nickname[0] != '\0'){
-                    strcpy(message.nick_sender, current_nickname);
-                }
-
-                strcpy(message.infos, nickname);
-                strcpy(pending_nickname, nickname);
-
-                send_all(sockfd, &message, sizeof(message));
+            if (strlen(nickname) >= NICK_LEN) {
+                fprintf(stderr, "Max size for your pseudo is %d\n", NICK_LEN - 1);
+                continue;
             }
-            else {
-                message.type = ECHO_SEND;
-                message.pld_len = strlen(buff);
 
-                send_all(sockfd, &message, sizeof(message));
-                if (message.pld_len > 0) {
-                    send_all(sockfd, buff, message.pld_len);
+            int valid = 1;
+
+            for (size_t i = 0; i < strlen(nickname); i++) {
+                if (!isalnum((unsigned char)nickname[i])) {
+                    valid = 0;
+                    break;
                 }
+            }
+
+            if (!valid) {
+                fprintf(stderr, "Pseudo invalide : lettres et chiffres uniquement\n");
+                continue;
+            }
+
+            message.type = NICKNAME_NEW;
+            message.pld_len = 0;
+
+            strcpy(message.infos, nickname);
+            strcpy(pending_nickname, nickname);
+
+            send_all(sockfd, &message, sizeof(message));
+        }
+
+        /* Req2.5 : /who */
+        else if (strcmp(buff, "/who\n") == 0) {
+            message.type = NICKNAME_LIST;
+            message.pld_len = 0;
+
+            send_all(sockfd, &message, sizeof(message));
+        }
+
+        /* Req2.6 : /whois <pseudo> */
+        else if (strncmp(buff, "/whois ", 7) == 0) {
+            char *nickname = buff + 7;
+            char *newline = strchr(nickname, '\n');
+
+            if (newline != NULL) {
+                *newline = '\0';
+            }
+
+            if (strlen(nickname) == 0) {
+                fprintf(stderr, "Usage: /whois <pseudo>\n");
+                continue;
+            }
+
+            message.type = NICKNAME_INFOS;
+            message.pld_len = 0;
+
+            strcpy(message.infos, nickname);
+
+            send_all(sockfd, &message, sizeof(message));
+        }
+
+        /* Req2.7 : /msgall <message> */
+        else if (strncmp(buff, "/msgall ", 8) == 0) {
+            char *payload = buff + 8;
+            char *newline = strchr(payload, '\n');
+
+            if (newline != NULL) {
+                *newline = '\0';
+            }
+
+            if (strlen(payload) == 0) {
+                fprintf(stderr, "Usage: /msgall <message>\n");
+                continue;
+            }
+
+            message.type = BROADCAST_SEND;
+            message.pld_len = strlen(payload);
+
+            send_all(sockfd, &message, sizeof(message));
+
+            if (message.pld_len > 0) {
+                send_all(sockfd, payload, message.pld_len);
             }
         }
+
+        /* Req2.9 : /msg <pseudo> <message> */
+        else if (strncmp(buff, "/msg ", 5) == 0) {
+            char *nickname = buff + 5;
+
+            char *payload = strchr(nickname, ' ');
+
+            if (payload == NULL) {
+                fprintf(stderr, "Usage: /msg <pseudo> <message>\n");
+                continue;
+            }
+
+            // Espace pseudo et '\0'
+    
+            *payload = '\0';
+            payload++;
+
+            char *newline = strchr(payload, '\n');
+
+            if (newline != NULL) {
+                *newline = '\0';
+            }
+
+            if (strlen(nickname) == 0 || strlen(payload) == 0) {
+                fprintf(stderr, "Usage: /msg <pseudo> <message>\n");
+                continue;
+            }
+
+            message.type = UNICAST_SEND;
+            message.pld_len = strlen(payload);
+
+            strcpy(message.infos, nickname);
+
+            send_all(sockfd, &message, sizeof(message));
+
+            if (message.pld_len > 0) {
+                send_all(sockfd, payload, message.pld_len);
+            }
+        }
+
+        /* Req2.11 : echo */
+        else {
+            message.type = ECHO_SEND;
+            message.pld_len = strlen(buff);
+
+            send_all(sockfd, &message, sizeof(message));
+
+            if (message.pld_len > 0) {
+                send_all(sockfd, buff, message.pld_len);
+            }
+        }
+    }
 
         if (fds[1].revents & POLLIN) {
             memset(buff, 0, MSG_LEN);
