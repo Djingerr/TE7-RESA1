@@ -62,6 +62,10 @@ void echo_client(int sockfd) {
     char current_nickname[NICK_LEN] = "";
     char pending_nickname[NICK_LEN] = "";
 
+    char file_path[MSG_LEN]="";
+    char file_name[MSG_LEN]="";
+    char nick_recv[NICK_LEN]="";
+
     struct message message = {0};
 
     fds[0].fd = STDIN_FILENO;
@@ -232,6 +236,85 @@ void echo_client(int sockfd) {
                 send_all(sockfd, payload, message.pld_len);
             }
         }
+
+        /* Req 3.1 */
+        if (strncmp(buff, "/send ", 6) == 0) {
+            char *user = buff + 6
+            char *file = strchr(user, ' ');
+            if (file == NULL){
+                fprintf(stdout, 'Usage : /send <user> <dest>\n');
+                continue;
+            }
+            *file = '\0';
+            file++;
+            
+            char *newline = strchr(file, '\n');
+            if (newline != NULL) {
+                *newline = '\0';
+            }
+
+            //Gestion de toutes les erreurs possibles
+            if (strlen(user) == 0 || strlen(file) == 0) {
+                fprintf(stderr, "Usage : /send <user> <file>\n");
+                continue;
+            }
+            size_t file_len = strlen(file);
+
+            // Suppression des guillemets si y'a
+            if (file_len >= 2 && file[0] == '"' && file[file_len - 1] == '"') {
+                file[file_len - 1] = '\0';
+                file++;
+            }
+            FILE *fp = fopen(file, "rb");
+
+            if (fp == NULL) {
+                perror("fopen");
+                continue;
+            }
+
+            fclose(fp);
+
+            char *filename = strrchr(file, '/');
+
+            if (filename != NULL) {
+                filename++;
+            } 
+            else {
+                filename = file;
+            }
+
+            if (strlen(filename) == 0) {
+                fprintf(stderr, "Nom de fichier invalide\n");
+                continue;
+            }
+            if (strlen(user) >= sizeof(message.infos)) {
+                fprintf(stderr, "Pseudo destinataire trop long\n");
+                continue;
+            }
+
+            if (strlen(filename) >= MSG_LEN) {
+                fprintf(stderr, "Nom de fichier trop long\n");
+                continue;
+            }
+            strcpy(pending_file_path, file);
+            strcpy(pending_file_name, filename);
+            strcpy(pending_file_receiver, user);
+
+            message.type = FILE_REQUEST;
+            message.pld_len = strlen(filename);
+
+            strcpy(message.infos, user);
+
+            send_all(sockfd, &message, sizeof(message));
+
+            if (message.pld_len > 0) {
+                send_all(sockfd, filename, message.pld_len);
+            }
+
+            printf("File transfer request sent to %s for \"%s\".\n",
+            user, filename);
+        }
+
 
         /* Req2.11 : echo */
         else {
