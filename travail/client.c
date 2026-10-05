@@ -65,6 +65,7 @@ void echo_client(int sockfd) {
     char file_path[MSG_LEN]="";
     char file_name[MSG_LEN]="";
     char nick_recv[NICK_LEN]="";
+    int pending_file_request = 0;
 
     struct message message = {0};
 
@@ -89,6 +90,44 @@ void echo_client(int sockfd) {
 
         if (fgets(buff, MSG_LEN, stdin) == NULL) {
             break;
+        }
+
+        // Req3.2
+        if (pending_file_request) {
+            if (strcmp(buff, "N\n") == 0 || strcmp(buff, "n\n") == 0) {
+                memset(&message, 0, sizeof(message));
+                message.type = FILE_REJECT;
+                message.pld_len = 0;
+                strcpy(message.infos, nick_recv);
+
+                if (current_nickname[0] != '\0') {
+                    strcpy(message.nick_sender, current_nickname);
+                }
+
+                send_all(sockfd, &message, sizeof(message));
+                printf("File transfer from %s rejected.\n", nick_recv);
+                pending_file_request = 0;
+                nick_recv[0] = '\0';
+                file_name[0] = '\0';
+
+                continue;
+            }
+            else if (strcmp(buff, "Y\n") == 0 || strcmp(buff, "y\n") == 0) {
+                printf("File transfer accepted.\n");
+
+        /*
+         * Req3.3 :
+         * ici il faudra créer la socket temporaire,
+         * récupérer IP:PORT puis envoyer FILE_ACCEPT.
+         */
+
+                continue;
+            }
+
+            else {
+                printf("Please answer Y or N.\n");
+                continue;
+            }
         }
 
         /* On remet le pseudo actuel dans le message */
@@ -238,11 +277,11 @@ void echo_client(int sockfd) {
         }
 
         /* Req 3.1 */
-        if (strncmp(buff, "/send ", 6) == 0) {
-            char *user = buff + 6
+        else if (strncmp(buff, "/send ", 6) == 0) {
+            char *user = buff + 6;
             char *file = strchr(user, ' ');
             if (file == NULL){
-                fprintf(stdout, 'Usage : /send <user> <dest>\n');
+                fprintf(stdout, "Usage : /send <user> <dest>\n");
                 continue;
             }
             *file = '\0';
@@ -296,9 +335,9 @@ void echo_client(int sockfd) {
                 fprintf(stderr, "Nom de fichier trop long\n");
                 continue;
             }
-            strcpy(pending_file_path, file);
-            strcpy(pending_file_name, filename);
-            strcpy(pending_file_receiver, user);
+            strcpy(file_path, file);
+            strcpy(file_name, filename);
+            strcpy(nick_recv, user);
 
             message.type = FILE_REQUEST;
             message.pld_len = strlen(filename);
@@ -314,7 +353,6 @@ void echo_client(int sockfd) {
             printf("File transfer request sent to %s for \"%s\".\n",
             user, filename);
         }
-
 
         /* Req2.11 : echo */
         else {
@@ -352,8 +390,32 @@ void echo_client(int sockfd) {
                 printf("Welcome aboard captain %s\n", current_nickname);
             }
 
+            if (message.type == FILE_REQUEST) {
+                if (message.pld_len == 0){
+                    fprintf(stderr, "FILE_REQUEST invalide : nom de fichier manquant\n");
+                    continue;
+                }
+                /*
+                * Le serveur doit conserver le pseudo
+                * de l'émetteur initial dans nick_sender.
+                */
+                if (strlen(message.nick_sender) >= NICK_LEN) {
+                    fprintf(stderr, "Pseudo de l'emetteur trop long\n");
+                    continue;
+                }
+
+                strcpy(nick_recv, message.nick_sender);
+                strcpy(file_name, buff);
+
+                pending_file_request = 1;
+
+                printf("%s wants you to accept the transfer " "of the file named \"%s\".\n", nick_recv, file_name);
+                printf("Do you accept? [Y/N]\n");
+                continue;
+            }
+
             if (message.pld_len > 0) {
-                printf("Received (type=%s): %s\n", msg_type_str[message.type], buff);
+                printf("[%s] (type=%s): %s\n",message.nick_sender, msg_type_str[message.type], buff);
             }
         }
     }
