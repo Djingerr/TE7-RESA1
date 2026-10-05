@@ -41,6 +41,36 @@ struct client_info *client_list_add(struct client_info **head, int fd, struct so
     return node;
 }
 
+
+void client_list_remove(struct client_info **head, int fd) {
+    struct client_info *cur = *head;
+    struct client_info *prev = NULL;
+    while(cur != NULL)
+    {
+        if(cur->fd == fd) {
+            if(prev == NULL)
+            *head = cur->next;
+            else
+            prev->next = cur->next;
+            free(cur);
+            return;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+}
+
+void client_list_destroy(struct client_info **head) {
+    struct client_info *cur = *head;
+    struct client_info *tmp;
+    while(cur != NULL) {
+        tmp = cur->next;
+        free(cur);
+        cur = tmp;
+    }
+    *head = NULL;
+}
+
 struct client_info* client_list_find_by_fd(struct client_info *head, int fd){
     while (head != NULL) {
         if (head->fd == fd) {
@@ -59,35 +89,6 @@ struct client_info* client_list_find_by_nickname(struct client_info *head, const
         head = head->next;
     }
     return NULL;
-}
-
-void client_list_remove(struct client_info **head, int fd) {
-    struct client_info *cur = *head;
-    struct client_info *prev = NULL;
-    while(cur != NULL)
-    {
-        if(cur->fd == fd) {
-            if(prev == NULL)
-            *head = cur->next;
-            else
-                prev->next = cur->next;
-            free(cur);
-            return;
-        }
-        prev = cur;
-        cur = cur->next;
-    }
-}
-
-void client_list_destroy(struct client_info **head) {
-    struct client_info *cur = *head;
-    struct client_info *tmp;
-    while(cur != NULL) {
-    tmp = cur->next;
-        free(cur);
-        cur = tmp;
-    }
-    *head = NULL;
 }
 
 void die(int ret_value, const char *msg) {
@@ -128,7 +129,7 @@ int send_on_socket(int sock, void *buffer, size_t size) {
 
         if (ret_value == 0) {
             printf("Disconnected\n");
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         if (ret_value < 0) {
@@ -141,9 +142,223 @@ int send_on_socket(int sock, void *buffer, size_t size) {
     return ret_value;
 }
 
+void handle_switch_msg(struct message msg, struct client_info *clients, struct client_info *sender, int client_fd, char* buff) {
+    switch (msg.type) {
+        case NICKNAME_NEW: {
+            size_t len = strlen(msg.infos);
+            int valid = (len > 0 && len < NICK_LEN);
+            for (size_t k = 0; valid && k < len; k++) {
+                if (!isalnum((unsigned char)msg.infos[k])) {
+                    valid = 0;
+                }
+            }
+
+            struct message reply;
+            memset(&reply, 0, sizeof(reply));
+            reply.type = NICKNAME_NEW;
+            char reply_text[MSG_LEN];
+
+            if (!valid) {
+                snprintf(reply_text, sizeof(reply_text), "Pseudo invalide\n");
+            } else if (client_list_find_by_nickname(clients, msg.infos) != NULL) {
+                snprintf(reply_text, sizeof(reply_text), "Pseudo deja utilise\n");
+            } else {
+                strncpy(sender->nickname, msg.infos, NICK_LEN - 1);
+                sender->nickname[NICK_LEN - 1] = '\0';
+                snprintf(reply_text, sizeof(reply_text), "Welcome on the chat %s\n", sender->nickname);
+            }
+
+            reply.pld_len = strlen(reply_text);
+            send_on_socket(client_fd, &reply, sizeof(reply));
+            send_on_socket(client_fd, reply_text, reply.pld_len);
+            break;
+        }
+        case NICKNAME_LIST: {
+            char list_text[MSG_LEN];
+            int offset = snprintf(list_text, sizeof(list_text), "Online users are\n");
+            for (struct client_info *c = clients; c != NULL; c = c->next) {
+                if (c->nickname[0] != '\0' && offset < (int)sizeof(list_text)) {
+                    offset += snprintf(list_text + offset, sizeof(list_text) - offset, "  - %s\n", c->nickname);
+                }
+            }
+
+            struct message reply;
+            memset(&reply, 0, sizeof(reply));
+            reply.type = NICKNAME_LIST;
+            reply.pld_len = strlen(list_text);
+            send_on_socket(client_fd, &reply, sizeof(reply));
+            send_on_socket(client_fd, list_text, reply.pld_len);
+            break;
+        }
+        case NICKNAME_INFOS: {
+            struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+            struct message reply;
+            memset(&reply, 0, sizeof(reply));
+            reply.type = NICKNAME_INFOS;
+            char reply_text[NI_MAXHOST + NI_MAXSERV + NICK_LEN + 150];
+
+            if (target == NULL) {
+                snprintf(reply_text, sizeof(reply_text), "Utilisateur %s introuvable\n", msg.infos);
+            } else {
+                char host[NI_MAXHOST], port[NI_MAXSERV];
+                getnameinfo((struct sockaddr*)&target->addr, target->addrlen, host, sizeof(host), port, sizeof(port), NI_NUMERICHOST | NI_NUMERICSERV);
+                char date_str[64];
+                struct tm tm_info;
+                localtime_r(&target->connected_at, &tm_info);
+                strftime(date_str, sizeof(date_str), "%Y/%m/%d@%H:%M", &tm_info);
+                snprintf(reply_text, sizeof(reply_text), "%s connected since %s with IP address %s and port number %s\n", target->nickname, date_str, host, port);
+            }
+            size_t text_len = strlen(reply_text);
+            if (text_len >= MSG_LEN) {
+                text_len = MSG_LEN - 1;
+                reply_text[text_len] = '\0';
+            }
+            reply.pld_len = text_len;
+            send_on_socket(client_fd, &reply, sizeof(reply));
+            send_on_socket(client_fd, reply_text, reply.pld_len);
+            break;
+        }
+        case ECHO_SEND: {
+            struct message reply;
+            memset(&reply, 0, sizeof(reply));
+            reply.type = ECHO_SEND;
+            reply.pld_len = msg.pld_len;
+            send_on_socket(client_fd, &reply, sizeof(reply));
+
+            if (reply.pld_len > 0) {
+                send_on_socket(client_fd, buff, reply.pld_len);
+            }
+            break;
+        }
+        case BROADCAST_SEND: {
+            struct message reply;
+            memset(&reply, 0, sizeof(reply));
+            reply.type = BROADCAST_SEND;
+            reply.pld_len = msg.pld_len;
+            strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
+
+            for (struct client_info *c = clients; c != NULL; c = c->next) {
+                if (c->fd != client_fd) {
+                    send_on_socket(c->fd, &reply, sizeof(reply));
+                    if (reply.pld_len > 0) {
+                        send_on_socket(c->fd, buff, reply.pld_len);
+                    }
+                }
+            }
+            break;
+        }
+        case UNICAST_SEND: {
+            struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+            struct message reply;
+            memset(&reply, 0, sizeof(reply));
+
+            if (target == NULL) {
+                char err_text[MSG_LEN];
+                snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
+                reply.type = UNICAST_SEND;
+                reply.pld_len = strlen(err_text);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
+            } else {
+                reply.type = UNICAST_SEND;
+                reply.pld_len = msg.pld_len;
+                strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
+                send_on_socket(target->fd, &reply, sizeof(reply));
+                if (reply.pld_len > 0) {
+                    send_on_socket(target->fd, buff, reply.pld_len);
+                }
+            }
+            break;
+        }
+        default: {
+            char* resp = "message received";
+            struct message resp_msg;
+            memset(&resp_msg, 0, sizeof(resp_msg));
+            resp_msg.pld_len = strlen(resp);
+            resp_msg.type = ECHO_SEND;
+            send_on_socket(client_fd, &resp_msg, sizeof(resp_msg));
+            send_on_socket(client_fd, resp, resp_msg.pld_len);
+            break;
+        }
+    }
+}
+
+void handle_switch_file(struct message msg, struct client_info *clients, struct client_info *sender, int client_fd, char* buff) {
+    switch(msg.type) {
+        case FILE_REQUEST: {
+            // msg.infos contient le pseudo du destinataire (User2)
+            // buff contient le nom du fichier
+            struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+            if (target == NULL) {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_REQUEST;
+                char err_text[MSG_LEN];
+                snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
+                reply.pld_len = strlen(err_text);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
+            } else {
+                // On transmet la demande au destinataire en précisant qui est l'expéditeur
+                struct message req;
+                memset(&req, 0, sizeof(req));
+                req.type = FILE_REQUEST;
+                req.pld_len = msg.pld_len;
+                strncpy(req.nick_sender, sender->nickname, NICK_LEN - 1);
+                strncpy(req.infos, msg.infos, NICK_LEN - 1);
+                send_on_socket(target->fd, &req, sizeof(req));
+                if (req.pld_len > 0) {
+                    send_on_socket(target->fd, buff, req.pld_len);
+                }
+            }
+            break;
+        }
+        // 2. Acceptation du transfert (User2 -> Serveur -> User1) //
+        case FILE_ACCEPT: {
+            // msg.infos contient le pseudo de l'émetteur initial (User1)
+            // buff contient "IP:Port" d'écoute de User2 (ex: "127.0.0.1:8081")
+            struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+            if (target != NULL) {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_ACCEPT;
+                reply.pld_len = msg.pld_len;
+                strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, NICK_LEN - 1);
+                send_on_socket(target->fd, &reply, sizeof(reply));
+                if (reply.pld_len > 0) {
+                    send_on_socket(target->fd, buff, reply.pld_len);
+                }
+            }
+            break;
+        }
+        // 3. Refus du transfert (User2 -> Serveur -> User1) //
+        case FILE_REJECT: {
+            // msg.infos contient le pseudo de l'émetteur initial (User1)
+            struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
+            if (target != NULL) {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_REJECT;
+                reply.pld_len = msg.pld_len;
+                strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, NICK_LEN - 1);
+                send_on_socket(target->fd, &reply, sizeof(reply));
+                if (reply.pld_len > 0) {
+                    send_on_socket(target->fd, buff, reply.pld_len);
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+
 void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
     struct client_info *clients = NULL;
-
+    //init poll fds
     fds[0].fd = sfd;
     fds[0].events = POLLIN;
     fds[0].revents = 0;
@@ -156,24 +371,22 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
 
         printf("Waiting for activity\n");
         int nb_active_fd = poll(fds, FDS_SIZE, -1);
-        die(nb_active_fd, "Polling");
+        die(nb_active_fd, "Polling"); //écoute si il y a de l'activité -> accepte -> redirige vers un nouveau socket d'écoute pour le pld
         for(int i = 0; i < FDS_SIZE; i++) {
-            if ( i == 0 && fds[0].revents & POLLIN) {
-                //listen activity -> should accept -> redirect listen to new fd
-                
-                //Client accept
+            if ( i == 0 && fds[0].revents & POLLIN) { //si socket serv est en écoute d'activité alors:
                 struct sockaddr_storage client_addr;
                 socklen_t client_addrlen = sizeof(client_addr);
-                int client_fd = accept(fds[i].fd, (struct sockaddr*)&client_addr, &client_addrlen);
+                int client_fd = accept(fds[i].fd, (struct sockaddr*)&client_addr, &client_addrlen); // accepte
                 die(client_fd, "Could not accept client connection");
-
                 char host[NI_MAXHOST], port[NI_MAXSERV];
-                getnameinfo((struct sockaddr*)&client_addr, client_addrlen, host, sizeof(host), port, sizeof(port), NI_NUMERICHOST | NI_NUMERICSERV);
+                getnameinfo((struct sockaddr*)&client_addr,   // récupère les infos client
+                            client_addrlen, host, sizeof(host),
+                            port,
+                            sizeof(port),
+                            NI_NUMERICHOST | NI_NUMERICSERV);
                 printf("Client connected: %s:%s (fd=%d)\n", host, port, client_fd);
-
                 client_list_add(&clients, client_fd, &client_addr, client_addrlen); //Req1.8
-
-                for(size_t j = 0; j < FDS_SIZE; j++) {
+                for(size_t j = 0; j < FDS_SIZE; j++) {  //redirige vers le prochain socket dispo dans le tableau fds[] pour gérer le pld
                     if(fds[j].fd == -1) {
                         fds[j].fd = client_fd;
                         fds[j].events = POLLIN;
@@ -226,150 +439,10 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     send_on_socket(fds[i].fd, reply_text, reply.pld_len);
                     continue;
                 }
-
-                switch (msg.type) {
-                    case NICKNAME_NEW: {
-                        size_t len = strlen(msg.infos);
-                        int valid = (len > 0 && len < NICK_LEN);
-                        for (size_t k = 0; valid && k < len; k++) {
-                            if (!isalnum((unsigned char)msg.infos[k])) {
-                                valid = 0;
-                            }
-                        }
-
-                        struct message reply;
-                        memset(&reply, 0, sizeof(reply));
-                        reply.type = NICKNAME_NEW;
-                        char reply_text[MSG_LEN];
-
-                        if (!valid) {
-                            snprintf(reply_text, sizeof(reply_text), "Pseudo invalide\n");
-                        } else if (client_list_find_by_nickname(clients, msg.infos) != NULL) {
-                            snprintf(reply_text, sizeof(reply_text), "Pseudo deja utilise\n");
-                        } else {
-                            strncpy(sender->nickname, msg.infos, NICK_LEN - 1);
-                            sender->nickname[NICK_LEN - 1] = '\0';
-                            snprintf(reply_text, sizeof(reply_text), "Welcome on the chat %s\n", sender->nickname);
-                        }
-
-                        reply.pld_len = strlen(reply_text);
-                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
-                        send_on_socket(fds[i].fd, reply_text, reply.pld_len);
-                        break;
-                    }
-                    case NICKNAME_LIST: {
-                        char list_text[MSG_LEN];
-                        int offset = snprintf(list_text, sizeof(list_text), "Online users are\n");
-                        for (struct client_info *c = clients; c != NULL; c = c->next) {
-                            if (c->nickname[0] != '\0' && offset < (int)sizeof(list_text)) {
-                                offset += snprintf(list_text + offset, sizeof(list_text) - offset, "  - %s\n", c->nickname);
-                            }
-                        }
-
-                        struct message reply;
-                        memset(&reply, 0, sizeof(reply));
-                        reply.type = NICKNAME_LIST;
-                        reply.pld_len = strlen(list_text);
-                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
-                        send_on_socket(fds[i].fd, list_text, reply.pld_len);
-                        break;
-                    }
-                    case NICKNAME_INFOS: {
-                        struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
-
-                        struct message reply;
-                        memset(&reply, 0, sizeof(reply));
-                        reply.type = NICKNAME_INFOS;
-                        char reply_text[NI_MAXHOST + NI_MAXSERV + NICK_LEN + 150];
-
-                        if (target == NULL) {
-                            snprintf(reply_text, sizeof(reply_text), "Utilisateur %s introuvable\n", msg.infos);
-                        } else {
-                            char host[NI_MAXHOST], port[NI_MAXSERV];
-                            getnameinfo((struct sockaddr*)&target->addr, target->addrlen, host, sizeof(host), port, sizeof(port), NI_NUMERICHOST | NI_NUMERICSERV);
-
-                            char date_str[64];
-                            struct tm tm_info;
-                            localtime_r(&target->connected_at, &tm_info);
-                            strftime(date_str, sizeof(date_str), "%Y/%m/%d@%H:%M", &tm_info);
-
-                            snprintf(reply_text, sizeof(reply_text),
-                                     "%s connected since %s with IP address %s and port number %s\n",
-                                     target->nickname, date_str, host, port);
-                        }
-
-                        size_t text_len = strlen(reply_text);
-                        if (text_len >= MSG_LEN) {
-                            text_len = MSG_LEN - 1;
-                            reply_text[text_len] = '\0';
-                        }
-                        reply.pld_len = text_len;
-                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
-                        send_on_socket(fds[i].fd, reply_text, reply.pld_len);
-                        break;
-                    }
-                    case ECHO_SEND: {
-                        struct message reply;
-                        memset(&reply, 0, sizeof(reply));
-                        reply.type = ECHO_SEND;
-                        reply.pld_len = msg.pld_len;
-                        send_on_socket(fds[i].fd, &reply, sizeof(reply));
-                        if (reply.pld_len > 0) {
-                            send_on_socket(fds[i].fd, buff, reply.pld_len);
-                        }
-                        break;
-                    }
-                    case BROADCAST_SEND: {
-                        struct message reply;
-                        memset(&reply, 0, sizeof(reply));
-                        reply.type = BROADCAST_SEND;
-                        reply.pld_len = msg.pld_len;
-                        strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
-
-                        for (struct client_info *c = clients; c != NULL; c = c->next) {
-                            if (c->fd != fds[i].fd) {
-                                send_on_socket(c->fd, &reply, sizeof(reply));
-                                if (reply.pld_len > 0) {
-                                    send_on_socket(c->fd, buff, reply.pld_len);
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    case UNICAST_SEND: {
-                        struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
-
-                        struct message reply;
-                        memset(&reply, 0, sizeof(reply));
-
-                        if (target == NULL) {
-                            char err_text[MSG_LEN];
-                            snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
-                            reply.type = UNICAST_SEND;
-                            reply.pld_len = strlen(err_text);
-                            send_on_socket(fds[i].fd, &reply, sizeof(reply));
-                            send_on_socket(fds[i].fd, err_text, reply.pld_len);
-                        } else {
-                            reply.type = UNICAST_SEND;
-                            reply.pld_len = msg.pld_len;
-                            strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
-                            send_on_socket(target->fd, &reply, sizeof(reply));
-                            if (reply.pld_len > 0) {
-                                send_on_socket(target->fd, buff, reply.pld_len);
-                            }
-                        }
-                        break;
-                    }
-                    default: {
-                        char* resp = "message received";
-                        struct message resp_msg;
-                        memset(&resp_msg, 0, sizeof(resp_msg));
-                        resp_msg.pld_len = strlen(resp);
-                        resp_msg.type = ECHO_SEND;
-                        send_on_socket(fds[i].fd, &resp_msg, sizeof(resp_msg));
-                        send_on_socket(fds[i].fd, resp, resp_msg.pld_len);
-                        break;
-                    }
+                if (msg.type == FILE_REQUEST || msg.type == FILE_ACCEPT || msg.type == FILE_REJECT) {
+                    handle_switch_file(msg, clients, sender, fds[i].fd, buff);
+                } else {
+                    handle_switch_msg(msg, clients, sender, fds[i].fd, buff);
                 }
             }
         }
