@@ -129,7 +129,7 @@ int send_on_socket(int sock, void *buffer, size_t size) {
 
         if (ret_value == 0) {
             printf("Disconnected\n");
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
         if (ret_value < 0) {
@@ -142,7 +142,7 @@ int send_on_socket(int sock, void *buffer, size_t size) {
     return ret_value;
 }
 
-void handle_switch_msg(struct message msg, struct client_info *clients, struct client_info *sender, int fds, char* buff) {
+void handle_switch_msg(struct message msg, struct client_info *clients, struct client_info *sender, int client_fd, char* buff) {
     switch (msg.type) {
         case NICKNAME_NEW: {
             size_t len = strlen(msg.infos);
@@ -169,8 +169,8 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
             }
 
             reply.pld_len = strlen(reply_text);
-            send_on_socket(fds, &reply, sizeof(reply));
-            send_on_socket(fds, reply_text, reply.pld_len);
+            send_on_socket(client_fd, &reply, sizeof(reply));
+            send_on_socket(client_fd, reply_text, reply.pld_len);
             break;
         }
         case NICKNAME_LIST: {
@@ -186,8 +186,8 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
             memset(&reply, 0, sizeof(reply));
             reply.type = NICKNAME_LIST;
             reply.pld_len = strlen(list_text);
-            send_on_socket(fds, &reply, sizeof(reply));
-            send_on_socket(fds, list_text, reply.pld_len);
+            send_on_socket(client_fd, &reply, sizeof(reply));
+            send_on_socket(client_fd, list_text, reply.pld_len);
             break;
         }
         case NICKNAME_INFOS: {
@@ -214,8 +214,8 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
                 reply_text[text_len] = '\0';
             }
             reply.pld_len = text_len;
-            send_on_socket(fds, &reply, sizeof(reply));
-            send_on_socket(fds, reply_text, reply.pld_len);
+            send_on_socket(client_fd, &reply, sizeof(reply));
+            send_on_socket(client_fd, reply_text, reply.pld_len);
             break;
         }
         case ECHO_SEND: {
@@ -223,10 +223,10 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
             memset(&reply, 0, sizeof(reply));
             reply.type = ECHO_SEND;
             reply.pld_len = msg.pld_len;
-            send_on_socket(fds, &reply, sizeof(reply));
+            send_on_socket(client_fd, &reply, sizeof(reply));
 
             if (reply.pld_len > 0) {
-                send_on_socket(fds, buff, reply.pld_len);
+                send_on_socket(client_fd, buff, reply.pld_len);
             }
             break;
         }
@@ -238,7 +238,7 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
             strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
 
             for (struct client_info *c = clients; c != NULL; c = c->next) {
-                if (c->fd != fds) {
+                if (c->fd != client_fd) {
                     send_on_socket(c->fd, &reply, sizeof(reply));
                     if (reply.pld_len > 0) {
                         send_on_socket(c->fd, buff, reply.pld_len);
@@ -257,8 +257,8 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
                 snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
                 reply.type = UNICAST_SEND;
                 reply.pld_len = strlen(err_text);
-                send_on_socket(fds, &reply, sizeof(reply));
-                send_on_socket(fds, err_text, reply.pld_len);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
             } else {
                 reply.type = UNICAST_SEND;
                 reply.pld_len = msg.pld_len;
@@ -276,14 +276,14 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
             memset(&resp_msg, 0, sizeof(resp_msg));
             resp_msg.pld_len = strlen(resp);
             resp_msg.type = ECHO_SEND;
-            send_on_socket(fds, &resp_msg, sizeof(resp_msg));
-            send_on_socket(fds, resp, resp_msg.pld_len);
+            send_on_socket(client_fd, &resp_msg, sizeof(resp_msg));
+            send_on_socket(client_fd, resp, resp_msg.pld_len);
             break;
         }
     }
 }
 
-void handle_switch_file(struct message msg, struct client_info *clients, struct client_info *sender, int fds, char* buff) {
+void handle_switch_file(struct message msg, struct client_info *clients, struct client_info *sender, int client_fd, char* buff) {
     switch(msg.type) {
         case FILE_REQUEST: {
             // msg.infos contient le pseudo du destinataire (User2)
@@ -296,8 +296,8 @@ void handle_switch_file(struct message msg, struct client_info *clients, struct 
                 char err_text[MSG_LEN];
                 snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
                 reply.pld_len = strlen(err_text);
-                send_on_socket(fds, &reply, sizeof(reply));
-                send_on_socket(fds, err_text, reply.pld_len);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
             } else {
                 // On transmet la demande au destinataire en précisant qui est l'expéditeur
                 struct message req;
@@ -439,7 +439,11 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     send_on_socket(fds[i].fd, reply_text, reply.pld_len);
                     continue;
                 }
-                handle_switch_msg(msg, clients, sender, fds[i].fd, buff);
+                if (msg.type == FILE_REQUEST || msg.type == FILE_ACCEPT || msg.type == FILE_REJECT) {
+                    handle_switch_file(msg, clients, sender, fds[i].fd, buff);
+                } else {
+                    handle_switch_msg(msg, clients, sender, fds[i].fd, buff);
+                }
             }
         }
 	}
