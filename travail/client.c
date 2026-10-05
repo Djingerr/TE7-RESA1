@@ -56,6 +56,8 @@ int send_all(int sock, void *buffer, size_t size)
     return ret_value;
 }
 
+
+
 void echo_client(int sockfd) {
     char buff[MSG_LEN];
     struct pollfd fds[2];
@@ -66,6 +68,8 @@ void echo_client(int sockfd) {
     char file_name[MSG_LEN]="";
     char nick_recv[NICK_LEN]="";
     int pending_file_request = 0;
+
+    int file_peer_fd = -1;
 
     struct message message = {0};
 
@@ -114,20 +118,55 @@ void echo_client(int sockfd) {
             }
             else if (strcmp(buff, "Y\n") == 0 || strcmp(buff, "y\n") == 0) {
                 printf("File transfer accepted.\n");
+                // Socket temp
+                int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+                die(listen_fd, "socket creation");
+                struct sockaddr_in peer_addr = {0};
+                peer_addr.sin_family = AF_INET;
+                peer_addr.sin_port = htons(0);
+                peer_addr.sin_addr.s_addr = INADDR_ANY;
+                int ret_value = bind(listen_fd, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
+                die(ret_value, "binding");
+                ret_value = listen(listen_fd, 1);
+                die(ret_value, "listening");
+                
+                // Récupérer le vrai port
+                socklen_t addr_len = sizeof(peer_addr);
+                ret_value = getsockname(listen_fd, (struct sockaddr *)&peer_addr, &addr_len);
+                die(ret_value, "getsockname");
 
-        /*
-         * Req3.3 :
-         * ici il faudra créer la socket temporaire,
-         * récupérer IP:PORT puis envoyer FILE_ACCEPT.
-         */
+                int port = ntohs(peer_addr.sin_port);
+
+                char ip_port[MSG_LEN];
+                snprintf(ip_port, MSG_LEN, "127.0.0.1:%d", port);
+                
+                memset(&message, 0, sizeof(message));
+                message.type = FILE_ACCEPT;
+                
+                strcpy(message.infos, nick_recv);
+                strcpy(message.nick_sender, current_nickname);
+                message.pld_len = strlen(ip_port);
+
+                // Envoie au serv
+                send_all(sockfd, &message, sizeof(message));
+                send_all(sockfd, ip_port, message.pld_len);
+                printf("Waiting for %s on %s...\n", nick_recv, ip_port);
+                pending_file_request = 0;
+
+                file_peer_fd = accept(listen_fd, NULL, NULL);
+                die(file_peer_fd, "accept");
+                printf("Peer connected.\n");
+
+                close(listen_fd);
 
                 continue;
             }
-
-            else {
-                printf("Please answer Y or N.\n");
-                continue;
-            }
+            continue;
+        }
+        else {
+            printf("Please answer Y or N.\n");
+            continue;
+        }
         }
 
         /* On remet le pseudo actuel dans le message */
@@ -411,6 +450,35 @@ void echo_client(int sockfd) {
 
                 printf("%s wants you to accept the transfer " "of the file named \"%s\".\n", nick_recv, file_name);
                 printf("Do you accept? [Y/N]\n");
+                continue;
+            }
+
+            // User a accepté
+            if (message.type == FILE_ACCEPT) {
+                printf("%s accepted file transfer.\n",
+                message.nick_sender);
+                char ip[64];
+                int port;
+                
+                // Séparation de l'IP et du port.
+                if (sscanf(buff, "%63[^:]:%d", ip, &port) != 2) {
+                    fprintf(stderr, "Adresse IP:PORT invalide\n");
+                    continue;
+                }
+
+                file_peer_fd = socket(AF_INET, SOCK_STREAM, 0);
+                die(file_peer_fd, "socket creation");
+                struct sockaddr_in peer_addr = {0};
+                peer_addr.sin_family = AF_INET;
+                peer_addr.sin_port = htons(port);
+                inet_aton(ip, &peer_addr.sin_addr);
+                int ret_value = connect(file_peer_fd, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
+                die(ret_value, "On connecting to peer...");
+                printf("Connected directly to %s.\n",
+                message.nick_sender);
+
+                // ENVOIE DU FICHIER ICI
+
                 continue;
             }
 
