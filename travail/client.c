@@ -7,9 +7,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
+#include <ctype.h>
+
 #include "msg_struct.h"
 #include "common.h"
-#include <ctype.h>
 
 void die(int ret_value, const char *msg)
 {
