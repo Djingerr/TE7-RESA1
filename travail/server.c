@@ -401,9 +401,9 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                 struct message msg;
                 memset(&msg, 0, sizeof(msg));
                 int ret = read_on_socket(fds[i].fd, &msg, sizeof(msg));
-                if (ret <= 0) {
-                    client_list_remove(&clients, fds[i].fd);
-                    close(fds[i].fd);
+                if (ret <= 0) {                             //Si erreur de lecture alors:
+                    client_list_remove(&clients, fds[i].fd);//Suppresion du client de la liste des clients
+                    close(fds[i].fd);                       //Fermeture de son socket d'écoute
                     fds[i].fd = -1;
                     continue;
                 }
@@ -428,8 +428,8 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                 }
                 printf("type = %s, nick_sender = %s, payload = %s, from fd = %d\n", msg_type_str[msg.type], msg.nick_sender, buff, fds[i].fd);
 
-                struct client_info *sender = client_list_find_by_fd(clients, fds[i].fd);
-                if (sender != NULL && sender->nickname[0] == '\0' && msg.type != NICKNAME_NEW) {
+                struct client_info *sender = client_list_find_by_fd(clients, fds[i].fd);        //récupère les infos du client avec le fd = fds[i].fd
+                if (sender != NULL && sender->nickname[0] == '\0' && msg.type != NICKNAME_NEW) {//Si aucun pseudo attribué alors:
                     struct message reply;
                     memset(&reply, 0, sizeof(reply));
                     reply.type = msg.type;
@@ -440,9 +440,9 @@ void handle_clients(struct pollfd fds[FDS_SIZE], int sfd) {
                     continue;
                 }
                 if (msg.type == FILE_REQUEST || msg.type == FILE_ACCEPT || msg.type == FILE_REJECT) {
-                    handle_switch_file(msg, clients, sender, fds[i].fd, buff);
+                    handle_switch_file(msg, clients, sender, fds[i].fd, buff); //Gestion de l'envoi ou de la réception d'un fichier
                 } else {
-                    handle_switch_msg(msg, clients, sender, fds[i].fd, buff);
+                    handle_switch_msg(msg, clients, sender, fds[i].fd, buff);//Gestion de l'envoi ou de la réception d'un message
                 }
             }
         }
