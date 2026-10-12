@@ -12,7 +12,7 @@
 #include <ctype.h>
 
 #define FDS_SIZE 128
-
+#include "client_list.h"
 #include "common.h"
 #include "msg_struct.h"
 
@@ -284,15 +284,51 @@ void handle_switch_msg(struct message msg, struct client_info *clients, struct c
 }
 
 void handle_switch_file(struct message msg, struct client_info *clients, struct client_info *sender, int client_fd, char* buff) {
+    if (sender == NULL) {
+        return;
+    }
+
     switch(msg.type) {
+        // 1. Demande d'envoi de fichier (User1 -> Serveur -> User2) //
         case FILE_REQUEST: {
             // msg.infos contient le pseudo du destinataire (User2)
             // buff contient le nom du fichier
+
+            // Validation du nom de fichier / payload
+            if (msg.pld_len <= 0 || buff[0] == '\0') {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_REJECT;
+                strncpy(reply.nick_sender, "server", NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
+                char err_text[MSG_LEN] = "Nom de fichier manquant\n";
+                reply.pld_len = strlen(err_text);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
+                break;
+            }
+
+            // Vérification : envoi à soi-même interdit
+            if (strcmp(sender->nickname, msg.infos) == 0) {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_REJECT;
+                strncpy(reply.nick_sender, "server", NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
+                char err_text[MSG_LEN] = "Impossible de s'envoyer un fichier a soi-meme\n";
+                reply.pld_len = strlen(err_text);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
+                break;
+            }
+
             struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
             if (target == NULL) {
                 struct message reply;
                 memset(&reply, 0, sizeof(reply));
-                reply.type = FILE_REQUEST;
+                reply.type = FILE_REJECT;
+                strncpy(reply.nick_sender, "server", NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
                 char err_text[MSG_LEN];
                 snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable\n", msg.infos);
                 reply.pld_len = strlen(err_text);
@@ -305,7 +341,7 @@ void handle_switch_file(struct message msg, struct client_info *clients, struct 
                 req.type = FILE_REQUEST;
                 req.pld_len = msg.pld_len;
                 strncpy(req.nick_sender, sender->nickname, NICK_LEN - 1);
-                strncpy(req.infos, msg.infos, NICK_LEN - 1);
+                strncpy(req.infos, msg.infos, INFOS_LEN - 1);
                 send_on_socket(target->fd, &req, sizeof(req));
                 if (req.pld_len > 0) {
                     send_on_socket(target->fd, buff, req.pld_len);
@@ -313,18 +349,30 @@ void handle_switch_file(struct message msg, struct client_info *clients, struct 
             }
             break;
         }
+
         // 2. Acceptation du transfert (User2 -> Serveur -> User1) //
         case FILE_ACCEPT: {
             // msg.infos contient le pseudo de l'émetteur initial (User1)
             // buff contient "IP:Port" d'écoute de User2 (ex: "127.0.0.1:8081")
             struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
-            if (target != NULL) {
+            if (target == NULL) {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_REJECT;
+                strncpy(reply.nick_sender, "server", NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
+                char err_text[MSG_LEN];
+                snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable ou deconnecte\n", msg.infos);
+                reply.pld_len = strlen(err_text);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
+            } else {
                 struct message reply;
                 memset(&reply, 0, sizeof(reply));
                 reply.type = FILE_ACCEPT;
                 reply.pld_len = msg.pld_len;
                 strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
-                strncpy(reply.infos, msg.infos, NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
                 send_on_socket(target->fd, &reply, sizeof(reply));
                 if (reply.pld_len > 0) {
                     send_on_socket(target->fd, buff, reply.pld_len);
@@ -332,24 +380,43 @@ void handle_switch_file(struct message msg, struct client_info *clients, struct 
             }
             break;
         }
+
         // 3. Refus du transfert (User2 -> Serveur -> User1) //
         case FILE_REJECT: {
             // msg.infos contient le pseudo de l'émetteur initial (User1)
             struct client_info *target = client_list_find_by_nickname(clients, msg.infos);
-            if (target != NULL) {
+            if (target == NULL) {
                 struct message reply;
                 memset(&reply, 0, sizeof(reply));
                 reply.type = FILE_REJECT;
-                reply.pld_len = msg.pld_len;
+                strncpy(reply.nick_sender, "server", NICK_LEN - 1);
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
+                char err_text[MSG_LEN];
+                snprintf(err_text, sizeof(err_text), "Utilisateur %s introuvable ou deconnecte\n", msg.infos);
+                reply.pld_len = strlen(err_text);
+                send_on_socket(client_fd, &reply, sizeof(reply));
+                send_on_socket(client_fd, err_text, reply.pld_len);
+            } else {
+                struct message reply;
+                memset(&reply, 0, sizeof(reply));
+                reply.type = FILE_REJECT;
                 strncpy(reply.nick_sender, sender->nickname, NICK_LEN - 1);
-                strncpy(reply.infos, msg.infos, NICK_LEN - 1);
-                send_on_socket(target->fd, &reply, sizeof(reply));
-                if (reply.pld_len > 0) {
+                strncpy(reply.infos, msg.infos, INFOS_LEN - 1);
+                if (msg.pld_len > 0) {
+                    reply.pld_len = msg.pld_len;
+                    send_on_socket(target->fd, &reply, sizeof(reply));
                     send_on_socket(target->fd, buff, reply.pld_len);
+                } else {
+                    char reject_text[MSG_LEN];
+                    snprintf(reject_text, sizeof(reject_text), "%s a refuse le transfert du fichier.\n", sender->nickname);
+                    reply.pld_len = strlen(reject_text);
+                    send_on_socket(target->fd, &reply, sizeof(reply));
+                    send_on_socket(target->fd, reject_text, reply.pld_len);
                 }
             }
             break;
         }
+
         default:
             break;
     }
