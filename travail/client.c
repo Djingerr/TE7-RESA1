@@ -99,7 +99,7 @@ static void send_file(int peer_fd, const char *path, const char *name, const cha
     size_t n;
     int ok = 1;
 
-    /* Req3.6 : envoi par morceaux */
+    /* Req3.6 : envoi par chunk */
     while ((n = fread(chunk, 1, sizeof(chunk), fp)) > 0) {
         memset(&msg, 0, sizeof(msg));
         msg.type = FILE_SEND;
@@ -139,7 +139,7 @@ static void send_file(int peer_fd, const char *path, const char *name, const cha
     close(peer_fd);
 }
 
-/* Récepteur : reçoit les morceaux, écrit dans .resa1/inbox, renvoie FILE_ACK */
+// Récepteur : reçoit les morceaux, écrit dans .resa1/inbox, renvoie FILE_ACK 
 static void receive_file(int peer_fd, const char *name, const char *my_nick, const char *peer_nick) {
     char path[MSG_LEN];
     char chunk[MSG_LEN];
@@ -172,14 +172,14 @@ static void receive_file(int peer_fd, const char *name, const char *my_nick, con
         if (peer_recv_all(peer_fd, &msg, sizeof(msg)) < 0) { ok = 0; break; }
         if (msg.type != FILE_SEND) { ok = 0; break; }
 
-        /* Req3.6 : valider AVANT de lire */
+        // Req 3.6
         if (msg.pld_len < 0 || msg.pld_len > MSG_LEN) {
             fprintf(stderr, "Longueur de morceau invalide : %d\n", msg.pld_len);
             ok = 0;
             break;
         }
 
-        if (msg.pld_len == 0) break;   /* fin */
+        if (msg.pld_len == 0) break;   // fin zb
 
         if (peer_recv_all(peer_fd, chunk, msg.pld_len) < 0) { ok = 0; break; }
         if (fwrite(chunk, 1, msg.pld_len, fp) != (size_t)msg.pld_len) { ok = 0; break; }
@@ -190,7 +190,7 @@ static void receive_file(int peer_fd, const char *name, const char *my_nick, con
     if (ok) {
         printf("%s saved in %s\n", name, path);
 
-        /* Req3.5 : confirmation */
+        // Req 3.5 : confirmation 
         memset(&msg, 0, sizeof(msg));
         msg.type = FILE_ACK;
         msg.pld_len = 0;
@@ -465,7 +465,7 @@ void echo_client(int sockfd) {
             }
         }
 
-        /* Req 3.1 */
+        // Req 3.1
         else if (strncmp(buff, "/send ", 6) == 0) {
             char *user = buff + 6;
             char *file = strchr(user, ' ');
@@ -543,7 +543,7 @@ void echo_client(int sockfd) {
             user, filename);
         }
 
-        /* Req2.11 : echo */
+        // Req 2.11
         else {
             message.type = ECHO_SEND;
             message.pld_len = strlen(buff);
