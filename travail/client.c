@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <poll.h>
 #include <ctype.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 #include "msg_struct.h"
 #include "common.h"
@@ -57,6 +59,28 @@ int send_all(int sock, void *buffer, size_t size)
     return ret_value;
 }
 
+// Pour la connexion peer to peer, il faut traiter les envoies et receptions différements ; ici co coupée = transfert échoué
+static int peer_recv_all(int sock, void *buffer, size_t size)
+{
+    size_t done = 0;
+    while (done < size) {
+        ssize_t r = read(sock, (char *)buffer + done, size - done);
+        if (r <= 0) return -1;
+        done += r;
+    }
+    return 0;
+}
+
+static int peer_send_all(int sock, const void *buffer, size_t size)
+{
+    size_t done = 0;
+    while (done < size) {
+        ssize_t w = write(sock, (const char *)buffer + done, size - done);
+        if (w <= 0) return -1;
+        done += w;
+    }
+    return 0;
+}
 
 
 void echo_client(int sockfd) {
@@ -97,7 +121,7 @@ void echo_client(int sockfd) {
             break;
         }
 
-        // Req3.2
+        // Req 3.2
         if (pending_file_request) {
             if (strcmp(buff, "N\n") == 0 || strcmp(buff, "n\n") == 0) {
                 memset(&message, 0, sizeof(message));
@@ -162,12 +186,10 @@ void echo_client(int sockfd) {
 
                 continue;
             }
-            continue;
-        }
-        else {
-            printf("Please answer Y or N.\n");
-            continue;
-        }
+            else {
+                printf("Please answer Y or N.\n");
+                continue;
+            }
         }
 
         /* On remet le pseudo actuel dans le message */
@@ -371,7 +393,7 @@ void echo_client(int sockfd) {
                 continue;
             }
 
-            if (strlen(filename) >= MSG_LEN) {
+            if (strlen(filename) >= sizeof(message.infos)) {
                 fprintf(stderr, "Nom de fichier trop long\n");
                 continue;
             }
