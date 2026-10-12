@@ -13,6 +13,7 @@
 
 #include "msg_struct.h"
 #include "common.h"
+#define INBOX_DIR ".resa1/inbox"
 
 void die(int ret_value, const char *msg)
 {
@@ -82,6 +83,127 @@ static int peer_send_all(int sock, const void *buffer, size_t size)
     return 0;
 }
 
+/* Émetteur : envoie le fichier par morceaux puis attend FILE_ACK */
+static void send_file(int peer_fd, const char *path, const char *name, const char *my_nick, const char *peer_nick) {
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL) {
+        perror("fopen");
+        close(peer_fd);
+        return;
+    }
+
+    printf("Connecting to %s and sending the file...\n", peer_nick);
+
+    struct message msg;
+    char chunk[MSG_LEN];
+    size_t n;
+    int ok = 1;
+
+    /* Req3.6 : envoi par morceaux */
+    while ((n = fread(chunk, 1, sizeof(chunk), fp)) > 0) {
+        memset(&msg, 0, sizeof(msg));
+        msg.type = FILE_SEND;
+        msg.pld_len = (int)n;
+        strncpy(msg.infos, name, sizeof(msg.infos) - 1);
+        strncpy(msg.nick_sender, my_nick, sizeof(msg.nick_sender) - 1);
+
+        if (peer_send_all(peer_fd, &msg, sizeof(msg)) < 0 ||
+            peer_send_all(peer_fd, chunk, n) < 0) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(fp)) ok = 0;
+    fclose(fp);
+
+    /* fin : FILE_SEND de longueur 0 */
+    if (ok) {
+        memset(&msg, 0, sizeof(msg));
+        msg.type = FILE_SEND;
+        msg.pld_len = 0;
+        strncpy(msg.infos, name, sizeof(msg.infos) - 1);
+        strncpy(msg.nick_sender, my_nick, sizeof(msg.nick_sender) - 1);
+        if (peer_send_all(peer_fd, &msg, sizeof(msg)) < 0) ok = 0;
+    }
+
+    /* Req3.5 : attente de l'ACK */
+    if (ok) {
+        memset(&msg, 0, sizeof(msg));
+        if (peer_recv_all(peer_fd, &msg, sizeof(msg)) == 0 && msg.type == FILE_ACK)
+            printf("%s has received the file.\n", peer_nick);
+        else
+            ok = 0;
+    }
+
+    if (!ok) fprintf(stderr, "File transfer to %s failed.\n", peer_nick);
+    close(peer_fd);
+}
+
+/* Récepteur : reçoit les morceaux, écrit dans .resa1/inbox, renvoie FILE_ACK */
+static void receive_file(int peer_fd, const char *name, const char *my_nick, const char *peer_nick) {
+    char path[MSG_LEN];
+    char chunk[MSG_LEN];
+    struct message msg;
+    int ok = 1;
+
+    if ((mkdir(".resa1", 0755) < 0 && errno != EEXIST) ||
+        (mkdir(INBOX_DIR, 0755) < 0 && errno != EEXIST)) {
+        perror("mkdir");
+        close(peer_fd);
+        return;
+    }
+
+    if (snprintf(path, sizeof(path), "%s/%s", INBOX_DIR, name) >= (int)sizeof(path)) {
+        fprintf(stderr, "Chemin trop long\n");
+        close(peer_fd);
+        return;
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (fp == NULL) {
+        perror("fopen");
+        close(peer_fd);
+        return;
+    }
+
+    printf("Receiving the file from %s...\n", peer_nick);
+
+    while (1) {
+        if (peer_recv_all(peer_fd, &msg, sizeof(msg)) < 0) { ok = 0; break; }
+        if (msg.type != FILE_SEND) { ok = 0; break; }
+
+        /* Req3.6 : valider AVANT de lire */
+        if (msg.pld_len < 0 || msg.pld_len > MSG_LEN) {
+            fprintf(stderr, "Longueur de morceau invalide : %d\n", msg.pld_len);
+            ok = 0;
+            break;
+        }
+
+        if (msg.pld_len == 0) break;   /* fin */
+
+        if (peer_recv_all(peer_fd, chunk, msg.pld_len) < 0) { ok = 0; break; }
+        if (fwrite(chunk, 1, msg.pld_len, fp) != (size_t)msg.pld_len) { ok = 0; break; }
+    }
+
+    if (fclose(fp) != 0) ok = 0;
+
+    if (ok) {
+        printf("%s saved in %s\n", name, path);
+
+        /* Req3.5 : confirmation */
+        memset(&msg, 0, sizeof(msg));
+        msg.type = FILE_ACK;
+        msg.pld_len = 0;
+        strncpy(msg.infos, name, sizeof(msg.infos) - 1);
+        strncpy(msg.nick_sender, my_nick, sizeof(msg.nick_sender) - 1);
+        peer_send_all(peer_fd, &msg, sizeof(msg));
+    } else {
+        fprintf(stderr, "File transfer from %s failed.\n", peer_nick);
+        remove(path);
+    }
+
+    close(peer_fd);
+}
 
 void echo_client(int sockfd) {
     char buff[MSG_LEN];
@@ -179,11 +301,16 @@ void echo_client(int sockfd) {
                 pending_file_request = 0;
 
                 file_peer_fd = accept(listen_fd, NULL, NULL);
-                die(file_peer_fd, "accept");
-                printf("Peer connected.\n");
-
                 close(listen_fd);
+                if (file_peer_fd < 0) {
+                    perror("accept");
+                    continue;
+                }
 
+                receive_file(file_peer_fd, file_name, current_nickname, nick_recv);
+                file_peer_fd = -1;
+                file_name[0] = '\0';
+                nick_recv[0] = '\0';
                 continue;
             }
             else {
@@ -465,6 +592,12 @@ void echo_client(int sockfd) {
                     fprintf(stderr, "Pseudo de l'emetteur trop long\n");
                     continue;
                 }
+                // Eviter d'écrire un fichier ailleur, genre ~/.bashrc
+                if (strchr(buff, '/') != NULL ||
+                    strcmp(buff, ".") == 0 || strcmp(buff, "..") == 0) {
+                    fprintf(stderr, "Nom de fichier refusé : \"%s\"\n", buff);
+                    continue;
+                }
 
                 strcpy(nick_recv, message.nick_sender);
                 strcpy(file_name, buff);
@@ -478,8 +611,11 @@ void echo_client(int sockfd) {
 
             // User a accepté
             if (message.type == FILE_ACCEPT) {
-                printf("%s accepted file transfer.\n",
-                message.nick_sender);
+                if (file_path[0] == '\0') {
+                    fprintf(stderr, "FILE_ACCEPT inattendu, ignoré\n");
+                    continue;
+                }
+                printf("%s accepted file transfer.\n", message.nick_sender);
                 char ip[64];
                 int port;
                 
@@ -496,15 +632,32 @@ void echo_client(int sockfd) {
                 peer_addr.sin_port = htons(port);
                 inet_aton(ip, &peer_addr.sin_addr);
                 int ret_value = connect(file_peer_fd, (struct sockaddr *)&peer_addr, sizeof(peer_addr));
-                die(ret_value, "On connecting to peer...");
-                printf("Connected directly to %s.\n",
-                message.nick_sender);
+                if (ret_value < 0) {
+                    perror("connect");
+                    close(file_peer_fd);
+                    file_peer_fd = -1;
+                    continue;
+                }
 
-                // ENVOIE DU FICHIER ICI
-
+                send_file(file_peer_fd, file_path, file_name,
+                          current_nickname, message.nick_sender);
+                file_peer_fd = -1;
+                file_path[0] = '\0';
+                file_name[0] = '\0';
+                nick_recv[0] = '\0';
                 continue;
             }
-
+            if (message.type == FILE_REJECT) {
+                if (message.pld_len > 0) {
+                    printf("%s", buff);
+                } else {
+                    printf("%s cancelled file transfer.\n", message.nick_sender);
+                }
+                file_path[0] = '\0';
+                file_name[0] = '\0';
+                nick_recv[0] = '\0';
+                continue;
+            }
             if (message.pld_len > 0) {
                 printf("[%s] (type=%s): %s\n",message.nick_sender, msg_type_str[message.type], buff);
             }
