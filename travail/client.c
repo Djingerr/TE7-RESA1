@@ -23,25 +23,36 @@ void die(int ret_value, const char *msg)
     }
 }
 
-int recv_all(int sock, void *buffer, size_t size)
-{
-    size_t read_bytes = 0;
-    int ret_value;
-
-    while (read_bytes != size) {
-        ret_value = read(sock, (char *)buffer + read_bytes, size - read_bytes);
-        if (ret_value == 0) {
-            printf("Disconnected\n");
-            exit(EXIT_FAILURE);
-        }
-        die(ret_value, "reading");
-        read_bytes += ret_value;
+static void trim_newline(char *str) {
+    char *nl = strchr(str, '\n');
+    if (nl != NULL) {
+        *nl = '\0';
     }
-    return ret_value;
 }
 
-int send_all(int sock, void *buffer, size_t size)
-{
+int read_on_socket(int sock, void *buffer, size_t size) {
+    int read_bytes = 0;
+    int to_read = size;
+    int ret_val;
+    if (to_read == 0){
+        ret_val = 0;
+    }
+    while(read_bytes != to_read) {
+        ret_val = read(sock, (char*)(buffer) + read_bytes, to_read - read_bytes);
+        if(ret_val == 0) {
+            printf("client disconnected\n");
+            return ret_val;
+        }
+        if (ret_val < 0) {
+            perror("reading msg header\n");
+            return -1;
+        }
+        read_bytes += ret_val;
+    }
+    return ret_val;
+}
+
+int send_on_socket(int sock, void *buffer, size_t size){
     size_t written_bytes = 0;
     int ret_value;
 
@@ -50,18 +61,46 @@ int send_all(int sock, void *buffer, size_t size)
 
         if (ret_value == 0) {
             printf("Disconnected\n");
-            exit(EXIT_FAILURE);
+            return -1;
         }
 
-        die(ret_value, "writing");
+        if (ret_value < 0) {
+            perror("writing");
+            return -1;
+        }
         written_bytes += ret_value;
     }
 
     return ret_value;
 }
 
+static int send_msg(int sock, enum msg_type type, const char *sender, const char *infos, const void *payload, int pld_len)
+{
+    struct message msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = type;
+    msg.pld_len = pld_len;
+
+    if (sender != NULL && sender[0] != '\0') {
+        strncpy(msg.nick_sender, sender, sizeof(msg.nick_sender) - 1);
+    }
+    if (infos != NULL && infos[0] != '\0') {
+        strncpy(msg.infos, infos, sizeof(msg.infos) - 1);
+    }
+
+    if (send_on_socket(sock, &msg, sizeof(msg)) < 0) {
+        return -1;
+    }
+    if (pld_len > 0 && payload != NULL) {
+        if (send_on_socket(sock, (void *)payload, pld_len) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 // Pour la connexion peer to peer, il faut traiter les envoies et receptions différements ; ici co coupée = transfert échoué
-static int peer_recv_all(int sock, void *buffer, size_t size)
+static int peer_read_on_socket(int sock, void *buffer, size_t size)
 {
     size_t done = 0;
     while (done < size) {
@@ -72,7 +111,7 @@ static int peer_recv_all(int sock, void *buffer, size_t size)
     return 0;
 }
 
-static int peer_send_all(int sock, const void *buffer, size_t size)
+static int peer_send_on_socket(int sock, const void *buffer, size_t size)
 {
     size_t done = 0;
     while (done < size) {
@@ -107,8 +146,8 @@ static void send_file(int peer_fd, const char *path, const char *name, const cha
         strncpy(msg.infos, name, sizeof(msg.infos) - 1);
         strncpy(msg.nick_sender, my_nick, sizeof(msg.nick_sender) - 1);
 
-        if (peer_send_all(peer_fd, &msg, sizeof(msg)) < 0 ||
-            peer_send_all(peer_fd, chunk, n) < 0) {
+        if (peer_send_on_socket(peer_fd, &msg, sizeof(msg)) < 0 ||
+            peer_send_on_socket(peer_fd, chunk, n) < 0) {
             ok = 0;
             break;
         }
@@ -123,13 +162,13 @@ static void send_file(int peer_fd, const char *path, const char *name, const cha
         msg.pld_len = 0;
         strncpy(msg.infos, name, sizeof(msg.infos) - 1);
         strncpy(msg.nick_sender, my_nick, sizeof(msg.nick_sender) - 1);
-        if (peer_send_all(peer_fd, &msg, sizeof(msg)) < 0) ok = 0;
+        if (peer_send_on_socket(peer_fd, &msg, sizeof(msg)) < 0) ok = 0;
     }
 
     /* Req3.5 : attente de l'ACK */
     if (ok) {
         memset(&msg, 0, sizeof(msg));
-        if (peer_recv_all(peer_fd, &msg, sizeof(msg)) == 0 && msg.type == FILE_ACK)
+        if (peer_read_on_socket(peer_fd, &msg, sizeof(msg)) == 0 && msg.type == FILE_ACK)
             printf("%s has received the file.\n", peer_nick);
         else
             ok = 0;
@@ -169,7 +208,7 @@ static void receive_file(int peer_fd, const char *name, const char *my_nick, con
     printf("Receiving the file from %s...\n", peer_nick);
 
     while (1) {
-        if (peer_recv_all(peer_fd, &msg, sizeof(msg)) < 0) { ok = 0; break; }
+        if (peer_read_on_socket(peer_fd, &msg, sizeof(msg)) < 0) { ok = 0; break; }
         if (msg.type != FILE_SEND) { ok = 0; break; }
 
         // Req 3.6
@@ -181,7 +220,7 @@ static void receive_file(int peer_fd, const char *name, const char *my_nick, con
 
         if (msg.pld_len == 0) break;   // fin zb
 
-        if (peer_recv_all(peer_fd, chunk, msg.pld_len) < 0) { ok = 0; break; }
+        if (peer_read_on_socket(peer_fd, chunk, msg.pld_len) < 0) { ok = 0; break; }
         if (fwrite(chunk, 1, msg.pld_len, fp) != (size_t)msg.pld_len) { ok = 0; break; }
     }
 
@@ -196,7 +235,7 @@ static void receive_file(int peer_fd, const char *name, const char *my_nick, con
         msg.pld_len = 0;
         strncpy(msg.infos, name, sizeof(msg.infos) - 1);
         strncpy(msg.nick_sender, my_nick, sizeof(msg.nick_sender) - 1);
-        peer_send_all(peer_fd, &msg, sizeof(msg));
+        peer_send_on_socket(peer_fd, &msg, sizeof(msg));
     } else {
         fprintf(stderr, "File transfer from %s failed.\n", peer_nick);
         remove(path);
@@ -205,16 +244,22 @@ static void receive_file(int peer_fd, const char *name, const char *my_nick, con
     close(peer_fd);
 }
 
+struct client_state {
+    char current_nickname[NICK_LEN];
+    char pending_nickname[NICK_LEN];
+
+    /* Transfert P2P */
+    int pending_file_request;
+    char file_path[MSG_LEN];
+    char file_name[MSG_LEN];
+    char nick_recv[NICK_LEN];
+};
+
 void echo_client(int sockfd) {
     char buff[MSG_LEN];
     struct pollfd fds[2];
-    char current_nickname[NICK_LEN] = "";
-    char pending_nickname[NICK_LEN] = "";
-
-    char file_path[MSG_LEN]="";
-    char file_name[MSG_LEN]="";
-    char nick_recv[NICK_LEN]="";
-    int pending_file_request = 0;
+    struct client_state state;
+    memset(&state, 0, sizeof(state));
 
     int file_peer_fd = -1;
 
@@ -244,22 +289,13 @@ void echo_client(int sockfd) {
         }
 
         // Req 3.2
-        if (pending_file_request) {
+        if (state.pending_file_request) {
             if (strcmp(buff, "N\n") == 0 || strcmp(buff, "n\n") == 0) {
-                memset(&message, 0, sizeof(message));
-                message.type = FILE_REJECT;
-                message.pld_len = 0;
-                strcpy(message.infos, nick_recv);
-
-                if (current_nickname[0] != '\0') {
-                    strcpy(message.nick_sender, current_nickname);
-                }
-
-                send_all(sockfd, &message, sizeof(message));
-                printf("File transfer from %s rejected.\n", nick_recv);
-                pending_file_request = 0;
-                nick_recv[0] = '\0';
-                file_name[0] = '\0';
+                send_msg(sockfd, FILE_REJECT, state.current_nickname, state.nick_recv, NULL, 0);
+                printf("File transfer from %s rejected.\n", state.nick_recv);
+                state.pending_file_request = 0;
+                state.nick_recv[0] = '\0';
+                state.file_name[0] = '\0';
 
                 continue;
             }
@@ -286,19 +322,11 @@ void echo_client(int sockfd) {
 
                 char ip_port[MSG_LEN];
                 snprintf(ip_port, MSG_LEN, "127.0.0.1:%d", port);
-                
-                memset(&message, 0, sizeof(message));
-                message.type = FILE_ACCEPT;
-                
-                strcpy(message.infos, nick_recv);
-                strcpy(message.nick_sender, current_nickname);
-                message.pld_len = strlen(ip_port);
 
                 // Envoie au serv
-                send_all(sockfd, &message, sizeof(message));
-                send_all(sockfd, ip_port, message.pld_len);
-                printf("Waiting for %s on %s...\n", nick_recv, ip_port);
-                pending_file_request = 0;
+                send_msg(sockfd, FILE_ACCEPT, state.current_nickname, state.nick_recv, ip_port, strlen(ip_port));
+                printf("Waiting for %s on %s...\n", state.nick_recv, ip_port);
+                state.pending_file_request = 0;
 
                 file_peer_fd = accept(listen_fd, NULL, NULL);
                 close(listen_fd);
@@ -307,21 +335,16 @@ void echo_client(int sockfd) {
                     continue;
                 }
 
-                receive_file(file_peer_fd, file_name, current_nickname, nick_recv);
+                receive_file(file_peer_fd, state.file_name, state.current_nickname, state.nick_recv);
                 file_peer_fd = -1;
-                file_name[0] = '\0';
-                nick_recv[0] = '\0';
+                state.file_name[0] = '\0';
+                state.nick_recv[0] = '\0';
                 continue;
             }
             else {
                 printf("Please answer Y or N.\n");
                 continue;
             }
-        }
-
-        /* On remet le pseudo actuel dans le message */
-        if (current_nickname[0] != '\0') {
-            strcpy(message.nick_sender, current_nickname);
         }
 
         /* Req1.7 */
@@ -333,11 +356,7 @@ void echo_client(int sockfd) {
         /* Req2.1 / Req2.4 */
         if (strncmp(buff, "/nick ", 6) == 0) {
             char *nickname = buff + 6; // enleve le "/nick "
-            char *newline = strchr(nickname, '\n');
-
-            if (newline != NULL) {
-                *newline = '\0';
-            }
+            trim_newline(nickname);
 
             if (strlen(nickname) == 0) {
                 fprintf(stderr, "Pseudo vide interdit\n");
@@ -363,67 +382,39 @@ void echo_client(int sockfd) {
                 continue;
             }
 
-            message.type = NICKNAME_NEW;
-            message.pld_len = 0;
-
-            strcpy(message.infos, nickname);
-            strcpy(pending_nickname, nickname);
-
-            send_all(sockfd, &message, sizeof(message));
+            strcpy(state.pending_nickname, nickname);
+            send_msg(sockfd, NICKNAME_NEW, state.current_nickname, nickname, NULL, 0);
         }
 
         /* Req2.5 : /who */
         else if (strcmp(buff, "/who\n") == 0) {
-            message.type = NICKNAME_LIST;
-            message.pld_len = 0;
-
-            send_all(sockfd, &message, sizeof(message));
+            send_msg(sockfd, NICKNAME_LIST, state.current_nickname, NULL, NULL, 0);
         }
 
         /* Req2.6 : /whois <pseudo> */
         else if (strncmp(buff, "/whois ", 7) == 0) {
             char *nickname = buff + 7;
-            char *newline = strchr(nickname, '\n');
-
-            if (newline != NULL) {
-                *newline = '\0';
-            }
+            trim_newline(nickname);
 
             if (strlen(nickname) == 0) {
                 fprintf(stderr, "Usage: /whois <pseudo>\n");
                 continue;
             }
 
-            message.type = NICKNAME_INFOS;
-            message.pld_len = 0;
-
-            strcpy(message.infos, nickname);
-
-            send_all(sockfd, &message, sizeof(message));
+            send_msg(sockfd, NICKNAME_INFOS, state.current_nickname, nickname, NULL, 0);
         }
 
         /* Req2.7 : /msgall <message> */
         else if (strncmp(buff, "/msgall ", 8) == 0) {
             char *payload = buff + 8;
-            char *newline = strchr(payload, '\n');
-
-            if (newline != NULL) {
-                *newline = '\0';
-            }
+            trim_newline(payload);
 
             if (strlen(payload) == 0) {
                 fprintf(stderr, "Usage: /msgall <message>\n");
                 continue;
             }
 
-            message.type = BROADCAST_SEND;
-            message.pld_len = strlen(payload);
-
-            send_all(sockfd, &message, sizeof(message));
-
-            if (message.pld_len > 0) {
-                send_all(sockfd, payload, message.pld_len);
-            }
+            send_msg(sockfd, BROADCAST_SEND, state.current_nickname, NULL, payload, strlen(payload));
         }
 
         /* Req2.9 : /msg <pseudo> <message> */
@@ -438,31 +429,17 @@ void echo_client(int sockfd) {
             }
 
             // Espace pseudo et '\0'
-    
             *payload = '\0';
             payload++;
 
-            char *newline = strchr(payload, '\n');
-
-            if (newline != NULL) {
-                *newline = '\0';
-            }
+            trim_newline(payload);
 
             if (strlen(nickname) == 0 || strlen(payload) == 0) {
                 fprintf(stderr, "Usage: /msg <pseudo> <message>\n");
                 continue;
             }
 
-            message.type = UNICAST_SEND;
-            message.pld_len = strlen(payload);
-
-            strcpy(message.infos, nickname);
-
-            send_all(sockfd, &message, sizeof(message));
-
-            if (message.pld_len > 0) {
-                send_all(sockfd, payload, message.pld_len);
-            }
+            send_msg(sockfd, UNICAST_SEND, state.current_nickname, nickname, payload, strlen(payload));
         }
 
         // Req 3.1
@@ -476,10 +453,7 @@ void echo_client(int sockfd) {
             *file = '\0';
             file++;
             
-            char *newline = strchr(file, '\n');
-            if (newline != NULL) {
-                *newline = '\0';
-            }
+            trim_newline(file);
 
             //Gestion de toutes les erreurs possibles
             if (strlen(user) == 0 || strlen(file) == 0) {
@@ -524,20 +498,11 @@ void echo_client(int sockfd) {
                 fprintf(stderr, "Nom de fichier trop long\n");
                 continue;
             }
-            strcpy(file_path, file);
-            strcpy(file_name, filename);
-            strcpy(nick_recv, user);
+            strcpy(state.file_path, file);
+            strcpy(state.file_name, filename);
+            strcpy(state.nick_recv, user);
 
-            message.type = FILE_REQUEST;
-            message.pld_len = strlen(filename);
-
-            strcpy(message.infos, user);
-
-            send_all(sockfd, &message, sizeof(message));
-
-            if (message.pld_len > 0) {
-                send_all(sockfd, filename, message.pld_len);
-            }
+            send_msg(sockfd, FILE_REQUEST, state.current_nickname, user, filename, strlen(filename));
 
             printf("File transfer request sent to %s for \"%s\".\n",
             user, filename);
@@ -545,14 +510,7 @@ void echo_client(int sockfd) {
 
         // Req 2.11
         else {
-            message.type = ECHO_SEND;
-            message.pld_len = strlen(buff);
-
-            send_all(sockfd, &message, sizeof(message));
-
-            if (message.pld_len > 0) {
-                send_all(sockfd, buff, message.pld_len);
-            }
+            send_msg(sockfd, ECHO_SEND, state.current_nickname, NULL, buff, strlen(buff));
         }
     }
 
@@ -560,7 +518,7 @@ void echo_client(int sockfd) {
             memset(buff, 0, MSG_LEN);
             memset(&message, 0, sizeof(message));
 
-            recv_all(sockfd, &message, sizeof(message));
+            read_on_socket(sockfd, &message, sizeof(message));
 
             if (message.pld_len < 0 || message.pld_len >= MSG_LEN) {
                 fprintf(stderr, "Taille de message invalide\n");
@@ -568,15 +526,15 @@ void echo_client(int sockfd) {
             }
 
             if (message.pld_len > 0) {
-                recv_all(sockfd, buff, message.pld_len);
+                read_on_socket(sockfd, buff, message.pld_len);
                 buff[message.pld_len] = '\0';
             }
 
-            if (message.type == NICKNAME_NEW && pending_nickname[0] != '\0') {
-                strcpy(current_nickname, pending_nickname);
-                pending_nickname[0] = '\0';
+            if (message.type == NICKNAME_NEW && state.pending_nickname[0] != '\0') {
+                strcpy(state.current_nickname, state.pending_nickname);
+                state.pending_nickname[0] = '\0';
 
-                printf("Welcome aboard captain %s\n", current_nickname);
+                printf("Welcome aboard captain %s\n", state.current_nickname);
             }
 
             if (message.type == FILE_REQUEST) {
@@ -599,19 +557,19 @@ void echo_client(int sockfd) {
                     continue;
                 }
 
-                strcpy(nick_recv, message.nick_sender);
-                strcpy(file_name, buff);
+                strcpy(state.nick_recv, message.nick_sender);
+                strcpy(state.file_name, buff);
 
-                pending_file_request = 1;
+                state.pending_file_request = 1;
 
-                printf("%s wants you to accept the transfer " "of the file named \"%s\".\n", nick_recv, file_name);
+                printf("%s wants you to accept the transfer " "of the file named \"%s\".\n", state.nick_recv, state.file_name);
                 printf("Do you accept? [Y/N]\n");
                 continue;
             }
 
             // User a accepté
             if (message.type == FILE_ACCEPT) {
-                if (file_path[0] == '\0') {
+                if (state.file_path[0] == '\0') {
                     fprintf(stderr, "FILE_ACCEPT inattendu, ignoré\n");
                     continue;
                 }
@@ -639,12 +597,12 @@ void echo_client(int sockfd) {
                     continue;
                 }
 
-                send_file(file_peer_fd, file_path, file_name,
-                          current_nickname, message.nick_sender);
+                send_file(file_peer_fd, state.file_path, state.file_name,
+                          state.current_nickname, message.nick_sender);
                 file_peer_fd = -1;
-                file_path[0] = '\0';
-                file_name[0] = '\0';
-                nick_recv[0] = '\0';
+                state.file_path[0] = '\0';
+                state.file_name[0] = '\0';
+                state.nick_recv[0] = '\0';
                 continue;
             }
             if (message.type == FILE_REJECT) {
@@ -653,9 +611,9 @@ void echo_client(int sockfd) {
                 } else {
                     printf("%s cancelled file transfer.\n", message.nick_sender);
                 }
-                file_path[0] = '\0';
-                file_name[0] = '\0';
-                nick_recv[0] = '\0';
+                state.file_path[0] = '\0';
+                state.file_name[0] = '\0';
+                state.nick_recv[0] = '\0';
                 continue;
             }
             if (message.pld_len > 0) {
